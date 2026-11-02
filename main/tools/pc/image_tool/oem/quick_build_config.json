@@ -1,0 +1,46 @@
+{
+    "security_mode": "Non-Secure",
+    "algorithm": "ECC+SHA256+AES",
+    "CFCT": {
+        "CFCT_data_enc_flag": "0x0"
+    },
+    "OTFL": {
+        "OTFL_key_area": {
+            "OTFL_key_version_ext": "0x00000000",
+            "mask_OTFL_key_version_ext": "0x00000000"
+        },
+        "OTFL_Info_area": {
+            "OTFL_code_version_ext": "0x00000000",
+            "mask_OTFL_code_version_ext": "0x00000000",
+            "OTFL_code_enc_flag": "0x3C7896E1",
+            "OTFL_code_FlashReadClk": "0x0"
+        },
+        "OTFL_code_area": {
+            "OTFL_code_file": "./input/otfl.bin",
+            "partition_file": "./input/partition.bin"
+        }
+    },
+    "SYSTEM": {
+        "system_info_area": {
+            "system_version_ext": "0x00000000",
+            "mask_system_version_mask_ext": "0x00000000",
+            "system_enc_flag": "0x3C7896E1"
+        },
+        "boot_params_info": {
+            "single_param_size": "0x3000",
+            "boot_param_total_num": "0x8",
+            "boot_param_file0": "/* path of param0 file used for building muty boot table image */",
+            "boot_param_file1": "/* path of param1 file used for building muty boot table image */",
+            "boot_param_file2": "./input/reg_info.bin",
+            "boot_param_file3": "/* path of param3 file used for building muty boot table image */",
+            "boot_param_file4": "/* path of param4 file used for building muty boot table image */",
+            "boot_param_file5": "/* path of param5 file used for building muty boot table image */",
+            "boot_param_file6": "/* path of param6 file used for building muty boot table image */",
+            "boot_param_file7": "./input/reg_info.bin"
+        },
+        "uboot_info_area": {
+            "uboot_entry_point": "0x48700000",
+            "uboot_code_file": "input/u-boot-original.bin"
+        }
+    }
+}

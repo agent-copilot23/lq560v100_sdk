@@ -1,0 +1,28 @@
+<Partition_Info>
+  <Part Sel="1" PartitionName="otfl" FlashType="nand" FileSystem="none" Start="0" Length="1536K" SelectFile="otfl_spinand.img"/>
+  <Part Sel="1" PartitionName="uboot" FlashType="nand" FileSystem="none" Start="1536K" Length="1M" SelectFile="uboot_spinand.img"/>
+  <Part Sel="1" PartitionName="bl31" FlashType="nand" FileSystem="none" Start="2560K" Length="512K" SelectFile="bl31.img"/>
+  <Part Sel="1" PartitionName="kernel" FlashType="nand" FileSystem="none" Start="3M" Length="8M" SelectFile="uImage-fdt.img"/>
+  <Part Sel="1" PartitionName="rootfs" FlashType="nand" FileSystem="none" Start="11M" Length="8M" SelectFile="rootfs_lq560tinyv100.ramdisk.img"/>
+  <Part Sel="1" PartitionName="userfs" FlashType="nand" FileSystem="none" Start="19M" Length="32M" SelectFile="userfs_lq560tinyv100_2k_128k_32M.ubifs"/>
+  <Part Sel="1" PartitionName="data" FlashType="nand" FileSystem="none" Start="51M" Length="77M" SelectFile="datafs_lq560tinyv100_2k_128k_27M.ubifs"/>
+  <Env>arch=arm
+baudrate=115200
+board=lq560tinyv100
+board_name=lq560tinyv100
+bootdelay=0
+cpu=armv8
+ethact=gmac0
+loadaddr=0x40080000
+soc=lq560tinyv100
+stderr=serial
+stdin=serial
+stdout=serial
+vendor=vendor
+verify=n
+
+boot_slot_name=a
+bootargs=mem=132928K quiet timestamp=0x4000F800,0x800 quick_start=1 console=ttyAMA0,115200 clk_ignore_unused root=/dev/ram0 rootfstype=romfs initrd=0x44000000,0x2000000
+bootcmd=sensor_cfg preinit; ab_part_offset bl31 1 kernel 1 rootfs 1; nand read 0x4000fe00 ${bl31_offset} 0x10000; ipcboot bl31 0x4000fe00; rugzip ${kernel_offset} 0x43000000 0x42000000 0x20000; rugzip ${rootfs_offset} 0x46000000 0x44000000 0x20000; sensor_cfg init; ipcboot uimgfdt 0x42000000
+</Env>
+</Partition_Info>

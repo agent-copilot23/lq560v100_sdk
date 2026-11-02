@@ -1,0 +1,270 @@
+diff --git a/deflate.c b/deflate.c
+index 55bdc0e..3add924 100644
+--- a/deflate.c
++++ b/deflate.c
+@@ -378,6 +378,9 @@ longest_match(IPos cur_match)
+     register int len;                           /* length of current match */
+     int best_len = prev_length;                 /* best match length so far */
+     IPos limit = strstart > (IPos)MAX_DIST ? strstart - (IPos)MAX_DIST : NIL;
++    #ifdef __aarch64__
++    IPos next_match;
++    #endif
+     /* Stop when cur_match becomes <= limit. To simplify the code,
+      * we prevent matches with the string of window index 0.
+      */
+@@ -412,6 +415,11 @@ longest_match(IPos cur_match)
+         Assert(cur_match < strstart, "no future");
+         match = window + cur_match;
+ 
++        #ifdef __aarch64__
++        next_match = prev[cur_match & WMASK];
++        __asm__("PRFM PLDL1STRM, [%0]"::"r"(&(prev[next_match & WMASK])));
++        #endif
++
+         /* Skip to next match if the match length cannot increase
+          * or if the match length is less than 2:
+          */
+@@ -488,8 +496,14 @@ longest_match(IPos cur_match)
+             scan_end   = scan[best_len];
+ #endif
+         }
+-    } while ((cur_match = prev[cur_match & WMASK]) > limit
++    } 
++    #ifdef __aarch64__
++    while ((cur_match = next_match) > limit
++             && --chain_length != 0);
++    #else
++    while ((cur_match = prev[cur_match & WMASK]) > limit
+              && --chain_length != 0);
++    #endif
+ 
+     return best_len;
+ }
+@@ -777,7 +791,19 @@ deflate (int pack_level)
+             lookahead -= prev_length-1;
+             prev_length -= 2;
+             RSYNC_ROLL(strstart, prev_length+1);
++            while (prev_length >= 4) {
++                prev_length -= 4;
++                strstart++;
++                INSERT_STRING(strstart, hash_head);
++                strstart++;
++                INSERT_STRING(strstart, hash_head);
++                strstart++;
++                INSERT_STRING(strstart, hash_head);
++                strstart++;
++                INSERT_STRING(strstart, hash_head);
++            }
+             do {
++                if (prev_length == 0) break;
+                 strstart++;
+                 INSERT_STRING(strstart, hash_head);
+                 /* strstart never exceeds WSIZE-MAX_MATCH, so there are
+diff --git a/gzip.h b/gzip.h
+index 7c0acd4..cb15215 100644
+--- a/gzip.h
++++ b/gzip.h
+@@ -173,7 +173,7 @@ typedef int file_t;     /* Do not use stdio */
+ #define ASCII   1
+ 
+ #ifndef WSIZE
+-#  define WSIZE 0x8000     /* window size--must be a power of two, and */
++#  define WSIZE 0x2000     /* window size--must be a power of two, and */
+ #endif                     /*  at least 32K for zip's deflate method */
+ 
+ #define MIN_MATCH  3
+diff --git a/lib/match.c b/lib/match.c
+index c42aa4d..7b13188 100644
+--- a/lib/match.c
++++ b/lib/match.c
+@@ -68,7 +68,7 @@
+ #define MAX_MATCH	258
+ #define MAX_MATCH2	$128 /* MAX_MATCH/2-1 */
+ #define MIN_MATCH	3
+-#define    WSIZE	$32768
++#define    WSIZE	$8192
+ #define MAX_DIST	WSIZE - MAX_MATCH - MIN_MATCH - 1
+ 
+         .globl	_match_init
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 256bbf7..9b8be07 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -35,6 +35,7 @@ TESTS =					\
+   z-suffix				\
+   zdiff					\
+   zgrep-f				\
++  zgrep-abuse				\
+   zgrep-context				\
+   zgrep-signal				\
+   znew-k
+diff --git a/tests/zgrep-abuse b/tests/zgrep-abuse
+new file mode 100755
+index 0000000..3e8a8f9
+--- /dev/null
++++ b/tests/zgrep-abuse
+@@ -0,0 +1,41 @@
++#!/bin/sh
++# Show how zgrep applied to a crafted file name may overwrite
++# a selected file with chosen content.  Fixed in gzip-1.12.
++
++# Copyright (C) 2022 Free Software Foundation, Inc.
++
++# This program is free software: you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation, either version 3 of the License, or
++# (at your option) any later version.
++
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <https://www.gnu.org/licenses/>.
++# limit so don't run it by default.
++
++. "${srcdir=.}/init.sh"; path_prepend_ ..
++
++: > z || framework_failure_
++echo test |gzip > 'z|
++p
++1s|.*|chosen-content|
++1w hacked
++etouch .\x2fhacked2
++d
++#
++#' || framework_failure_
++
++fail=0
++
++zgrep test z* > /dev/null
++
++# Before the fix, each of these would be created.
++test -f hacked && fail=1
++test -f hacked2 && fail=1
++
++Exit $fail
+diff --git a/util.c b/util.c
+index e4240a7..397fb3e 100644
+--- a/util.c
++++ b/util.c
+@@ -31,6 +31,9 @@
+ #include "gzip.h"
+ #include <dirname.h>
+ #include <xalloc.h>
++#ifdef __aarch64__
++#include <arm_acle.h>
++#endif
+ 
+ #ifndef CHAR_BIT
+ #  define CHAR_BIT 8
+@@ -41,6 +44,7 @@ static int write_buffer (int, voidp, unsigned int);
+ /* ========================================================================
+  * Table of CRC-32's of all single-byte values (made by makecrc.c)
+  */
++#ifndef __aarch64__
+ static const ulg crc_32_tab[] = {
+   0x00000000L, 0x77073096L, 0xee0e612cL, 0x990951baL, 0x076dc419L,
+   0x706af48fL, 0xe963a535L, 0x9e6495a3L, 0x0edb8832L, 0x79dcb8a4L,
+@@ -95,6 +99,7 @@ static const ulg crc_32_tab[] = {
+   0x5d681b02L, 0x2a6f2b94L, 0xb40bbe37L, 0xc30c8ea1L, 0x5a05df1bL,
+   0x2d02ef8dL
+ };
++#endif
+ 
+ /* Shift register contents.  */
+ static ulg crc = 0xffffffffL;
+@@ -132,6 +137,48 @@ ulg updcrc(s, n)
+     const uch *s;           /* pointer to bytes to pump through */
+     unsigned n;             /* number of bytes in s[] */
+ {
++    #ifdef __aarch64__
++    register ulg c;
++    register const uint8_t  *buf1;
++    register const uint16_t *buf2;
++    register const uint32_t *buf4;
++    register const uint64_t *buf8;
++    int64_t length = (int64_t)n;
++    buf8 = (const  uint64_t *)(const void *)s;
++
++    if (s == NULL) {
++        c = 0xffffffffL;
++    } else {
++       c = crc;
++	
++    	while(length >= sizeof(uint64_t)) {
++    		c = __crc32d(c, *buf8++);
++    		length -= sizeof(uint64_t);
++    	}
++
++    	buf4 = (const uint32_t *)(const void *)buf8;
++    	if (length >= sizeof(uint32_t)) {
++    		c = __crc32w(c, *buf4++);
++    		length -= sizeof(uint32_t);
++    	}
++
++    	buf2 = (const uint16_t *)(const void *)buf4;
++    	if(length >= sizeof(uint16_t)) {
++    		c = __crc32h(c, *buf2++);
++    		length -= sizeof(uint16_t);
++    	}
++
++    	buf1 = (const uint8_t *)(const void *)buf2;
++    	if (length >= sizeof(uint8_t)) {
++    		c = __crc32b(c, *buf1);
++    		length -= sizeof(uint8_t);
++    	}
++    }
++
++	crc = c;
++
++    return (c ^ 0xffffffffL);
++#else
+     register ulg c;         /* temporary variable */
+ 
+     if (s == NULL) {
+@@ -144,6 +191,7 @@ ulg updcrc(s, n)
+     }
+     crc = c;
+     return c ^ 0xffffffffL;       /* (instead of ~c for 64-bit machines) */
++#endif
+ }
+ 
+ /* Return a current CRC value.  */
+diff --git a/zdiff.in b/zdiff.in
+index a1325f2..2b7ec23 100644
+--- a/zdiff.in
++++ b/zdiff.in
+@@ -51,7 +51,7 @@ escape='
+ while :; do
+   case $1 in
+   --h*) printf '%s\n' "$usage"   || exit 2; exit;;
+-  --v*) printf '%s\n' "$version" || exit 2; exit;;
++  --version) printf '%s\n' "$version" || exit 2; exit;;
+   --) shift; break;;
+   -*\'*) cmp="$cmp '"`printf '%sX\n' "$1" | sed "$escape"`;;
+   -?*) cmp="$cmp '$1'";;
+diff --git a/zgrep.in b/zgrep.in
+index 5e384bd..5ecc8b9 100644
+--- a/zgrep.in
++++ b/zgrep.in
+@@ -220,14 +220,11 @@ do
+       case $i in
+       (*'
+ '* | *'&'* | *'\'* | *'|'*)
+-        i=$(printf '%s\n' "$i" |
+-            sed '
+-              $!N
+-              $s/[&\|]/\\&/g
+-              $s/\n/\\n/g
+-            ');;
++          icolon=$(printf '%s\n' "$i:" |
++                     sed -e 's/[&\|]/\\&/g' -e '$!s/$/\\/');;
++      (*) icolon="$i:";;
+       esac
+-      sed_script="s|^|$i:|"
++      sed_script="s|^|$icolon|"
+ 
+       # Fail if grep or sed fails.
+       r=$(

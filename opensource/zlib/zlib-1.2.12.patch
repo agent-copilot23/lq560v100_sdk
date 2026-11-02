@@ -1,0 +1,2081 @@
+diff --git a/configure b/configure
+index 52ff4a0..d9d6c85 100755
+--- a/configure
++++ b/configure
+@@ -88,6 +88,7 @@ gcc=0
+ warn=0
+ debug=0
+ sanitize=0
++inflatehook=0
+ old_cc="$CC"
+ old_cflags="$CFLAGS"
+ OBJC='$(OBJZ) $(OBJG)'
+@@ -139,6 +140,7 @@ case "$1" in
+     -w* | --warn) warn=1; shift ;;
+     -d* | --debug) debug=1; shift ;;
+     --sanitize) sanitize=1; shift ;;
++    --inflatehook) inflatehook=1; shift ;;
+     *)
+       echo "unknown option: $1" | tee -a configure.log
+       echo "$0 --help for help" | tee -a configure.log
+@@ -174,7 +176,10 @@ if test -z "$CC"; then
+   else
+     cc=${CROSS_PREFIX}cc
+   fi
++else
++  cc=${CC}
+ fi
++
+ cflags=${CFLAGS-"-O3"}
+ # to force the asm version use: CFLAGS="-O3 -DASMV" ./configure
+ case "$cc" in
+@@ -603,6 +608,13 @@ if test $zprefix -eq 1; then
+   echo "Using z_ prefix on all symbols." | tee -a configure.log
+ fi
+ 
++if test $inflatehook -eq 1; then
++  sed < zconf.h "/#ifdef INFLATE_HOOK.* may be/s/def INFLATE_HOOK\(.*\) may be/ 1\1 was/" > zconf.temp.h
++  mv zconf.temp.h zconf.h
++  echo >> configure.log
++  echo "Using Z_INFLATE_HOOK" | tee -a configure.log
++fi
++
+ # if --solo compilation was requested, save that in zconf.h and remove gz stuff from object lists
+ if test $solo -eq 1; then
+   sed '/#define ZCONF_H/a\
+diff --git a/contrib/minizip/CMakeLists.txt b/contrib/minizip/CMakeLists.txt
+new file mode 100644
+index 0000000..a59f326
+--- /dev/null
++++ b/contrib/minizip/CMakeLists.txt
+@@ -0,0 +1,55 @@
++cmake_minimum_required(VERSION 2.4.4)
++project(minizip C)
++
++if(WIN32)
++    set(iowin32_src iowin32.c)
++    set(iowin32_h iowin32.h)
++endif()
++
++set(MINIZIP_HDS zip.h unzip.h ioapi.h mztools.h ${iowin32_h})
++set(MINIZIP_SRCS zip.c unzip.c ioapi.c mztools.c ${iowin32_src})
++set(MINIZ_SRCS zip.c ioapi.c minizip.c ${iowin32_src})
++set(MINIUNZ_SRCS unzip.c ioapi.c miniunz.c ${iowin32_src})
++
++# zlib
++include_directories(${CMAKE_SOURCE_DIR}/../..)
++add_subdirectory(${CMAKE_SOURCE_DIR}/../.. zlib_build)
++
++# minizip library
++include_directories(${zlib_BINARY_DIR})
++add_library(minizshared SHARED ${MINIZIP_HDS} ${MINIZIP_SRCS})
++add_library(minizstatic STATIC ${MINIZIP_HDS} ${MINIZIP_SRCS})
++target_link_libraries(minizshared PRIVATE zlib)
++target_link_libraries(minizstatic PRIVATE zlibstatic)
++set_target_properties(minizshared minizstatic PROPERTIES OUTPUT_NAME miniz)
++
++# minizip and miniunz
++add_executable(minizip ${MINIZ_SRCS})
++add_executable(miniunz ${MINIUNZ_SRCS})
++target_link_libraries(minizip PRIVATE zlibstatic)
++target_link_libraries(miniunz PRIVATE zlibstatic)
++
++# test
++if(UNIX)
++    macro(ADDTEST name)
++        add_executable(${name} tests/${name}.c)
++        target_include_directories(${name} PUBLIC ${CMAKE_SOURCE_DIR})
++        target_link_libraries(${name} PRIVATE minizshared PRIVATE zlib)
++        add_test(${name} ${name})
++    endmacro()
++    enable_testing()
++    ADDTEST(test_miniz_use)
++    ADDTEST(test_memory_func)
++    ADDTEST(test_custom_io)
++endif()
++
++# install
++if(NOT SKIP_INSTALL_LIBRARIES AND NOT SKIP_INSTALL_ALL )
++    install(TARGETS minizshared minizstatic
++        RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
++        ARCHIVE DESTINATION "${CMAKE_INSTALL_PREFIX}/lib"
++        LIBRARY DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" )
++endif()
++if(NOT SKIP_INSTALL_HEADERS AND NOT SKIP_INSTALL_ALL )
++    install(FILES ${MINIZIP_HDS} DESTINATION "${CMAKE_INSTALL_PREFIX}/include")
++endif()
+\ No newline at end of file
+diff --git a/contrib/minizip/Makefile b/contrib/minizip/Makefile
+index aac76e0..2e0f197 100644
+--- a/contrib/minizip/Makefile
++++ b/contrib/minizip/Makefile
+@@ -1,13 +1,25 @@
+-CC=cc
+-CFLAGS := $(CFLAGS) -O -I../..
++CC ?= cc
++CFLAGS:=$(CFLAGS) -O -I../..
++SHARED_FLAGS:=-shared -fPIC 
++LDFLAGS=-L../../ -lz
++AR ?= ar
++ARFLAGS=rcs
++
+ 
+ UNZ_OBJS = miniunz.o unzip.o ioapi.o ../../libz.a
+ ZIP_OBJS = minizip.o zip.o   ioapi.o ../../libz.a
+ 
++SHARED_OBJS = zip.lo unzip.lo ioapi.lo mztools.lo
++STATIC_OBJS = zip.o unzip.o ioapi.o mztools.o
++
++
+ .c.o:
+ 	$(CC) -c $(CFLAGS) $*.c
+ 
+-all: miniunz minizip
++%lo: %c
++	$(CC) -c $(CFLAGS) $(SHARED_FLAGS) -o $@ $<
++
++all: libminiz.so libminiz.a miniunz minizip
+ 
+ miniunz:  $(UNZ_OBJS)
+ 	$(CC) $(CFLAGS) -o $@ $(UNZ_OBJS)
+@@ -15,7 +27,31 @@ miniunz:  $(UNZ_OBJS)
+ minizip:  $(ZIP_OBJS)
+ 	$(CC) $(CFLAGS) -o $@ $(ZIP_OBJS)
+ 
+-test:	miniunz minizip
++libminiz.so: $(SHARED_OBJS)
++	$(CC) $(LDFLAGS) $(SHARED_FLAGS) $^ -o $@
++
++libminiz.a: $(STATIC_OBJS) 
++	$(AR) $(ARFLAGS) $@ $^
++                 
++test_custom_io: test_custom_io.o libminiz.so
++	$(CC) -o $@ $< -L. -lminiz -L../../ -lz
++
++test_memory_func: test_memory_func.o libminiz.so
++	$(CC) -o $@ $< -L. -lminiz -L../../ -lz
++
++test_miniz_use: test_miniz_use.o libminiz.so
++	$(CC) -o $@ $< -L. -lminiz -L../../ -lz
++
++test_custom_io.o: tests/test_custom_io.c
++	$(CC) -c -g -I. -o $@ $^
++
++test_memory_func.o: tests/test_memory_func.c
++	$(CC) -c -g -I. -o $@ $^
++
++test_miniz_use.o: tests/test_miniz_use.c
++	$(CC) -c -g -I. -o $@ $^
++
++test: miniunz minizip test_custom_io test_memory_func test_miniz_use
+ 	@rm -f test.*
+ 	@echo hello hello hello > test.txt
+ 	./minizip test test.txt
+@@ -23,7 +59,10 @@ test:	miniunz minizip
+ 	@mv test.txt test.old
+ 	./miniunz test.zip
+ 	@cmp test.txt test.old
++	@./test_miniz_use
++	@./test_memory_func
++	@./test_custom_io
+ 	@rm -f test.*
+-
++                                                                         
+ clean:
+-	/bin/rm -f *.o *~ minizip miniunz test.*
++	/bin/rm -f *.o *.lo *~ minizip miniunz libminiz.so libminiz.a test.* test_*
+\ No newline at end of file
+diff --git a/contrib/minizip/ioapi.c b/contrib/minizip/ioapi.c
+index d666e5a..baa6776 100644
+--- a/contrib/minizip/ioapi.c
++++ b/contrib/minizip/ioapi.c
+@@ -94,9 +94,9 @@ static int     ZCALLBACK ferror_file_func OF((voidpf opaque, voidpf stream));
+ 
+ static voidpf ZCALLBACK fopen_file_func (voidpf opaque, const char* filename, int mode)
+ {
+-    (void)opaque;
+     FILE* file = NULL;
+     const char* mode_fopen = NULL;
++    (void)opaque;
+     if ((mode & ZLIB_FILEFUNC_MODE_READWRITEFILTER)==ZLIB_FILEFUNC_MODE_READ)
+         mode_fopen = "rb";
+     else
+@@ -113,9 +113,9 @@ static voidpf ZCALLBACK fopen_file_func (voidpf opaque, const char* filename, in
+ 
+ static voidpf ZCALLBACK fopen64_file_func (voidpf opaque, const void* filename, int mode)
+ {
+-    (void)opaque;
+     FILE* file = NULL;
+     const char* mode_fopen = NULL;
++    (void)opaque;
+     if ((mode & ZLIB_FILEFUNC_MODE_READWRITEFILTER)==ZLIB_FILEFUNC_MODE_READ)
+         mode_fopen = "rb";
+     else
+@@ -133,24 +133,24 @@ static voidpf ZCALLBACK fopen64_file_func (voidpf opaque, const void* filename,
+ 
+ static uLong ZCALLBACK fread_file_func (voidpf opaque, voidpf stream, void* buf, uLong size)
+ {
+-    (void)opaque;
+     uLong ret;
++    (void)opaque;
+     ret = (uLong)fread(buf, 1, (size_t)size, (FILE *)stream);
+     return ret;
+ }
+ 
+ static uLong ZCALLBACK fwrite_file_func (voidpf opaque, voidpf stream, const void* buf, uLong size)
+ {
+-    (void)opaque;
+     uLong ret;
++    (void)opaque;
+     ret = (uLong)fwrite(buf, 1, (size_t)size, (FILE *)stream);
+     return ret;
+ }
+ 
+ static long ZCALLBACK ftell_file_func (voidpf opaque, voidpf stream)
+ {
+-    (void)opaque;
+     long ret;
++    (void)opaque;
+     ret = ftell((FILE *)stream);
+     return ret;
+ }
+@@ -158,17 +158,17 @@ static long ZCALLBACK ftell_file_func (voidpf opaque, voidpf stream)
+ 
+ static ZPOS64_T ZCALLBACK ftell64_file_func (voidpf opaque, voidpf stream)
+ {
+-    (void)opaque;
+     ZPOS64_T ret;
++    (void)opaque;
+     ret = (ZPOS64_T)FTELLO_FUNC((FILE *)stream);
+     return ret;
+ }
+ 
+ static long ZCALLBACK fseek_file_func (voidpf  opaque, voidpf stream, uLong offset, int origin)
+ {
+-    (void)opaque;
+     int fseek_origin=0;
+     long ret;
++    (void)opaque;
+     switch (origin)
+     {
+     case ZLIB_FILEFUNC_SEEK_CUR :
+@@ -190,9 +190,9 @@ static long ZCALLBACK fseek_file_func (voidpf  opaque, voidpf stream, uLong offs
+ 
+ static long ZCALLBACK fseek64_file_func (voidpf  opaque, voidpf stream, ZPOS64_T offset, int origin)
+ {
+-    (void)opaque;
+     int fseek_origin=0;
+     long ret;
++    (void)opaque;
+     switch (origin)
+     {
+     case ZLIB_FILEFUNC_SEEK_CUR :
+@@ -217,16 +217,16 @@ static long ZCALLBACK fseek64_file_func (voidpf  opaque, voidpf stream, ZPOS64_T
+ 
+ static int ZCALLBACK fclose_file_func (voidpf opaque, voidpf stream)
+ {
+-    (void)opaque;
+     int ret;
++    (void)opaque;
+     ret = fclose((FILE *)stream);
+     return ret;
+ }
+ 
+ static int ZCALLBACK ferror_file_func (voidpf opaque, voidpf stream)
+ {
+-    (void)opaque;
+     int ret;
++    (void)opaque;
+     ret = ferror((FILE *)stream);
+     return ret;
+ }
+diff --git a/contrib/minizip/miniunz.c b/contrib/minizip/miniunz.c
+index f103815..42925a7 100644
+--- a/contrib/minizip/miniunz.c
++++ b/contrib/minizip/miniunz.c
+@@ -656,4 +656,4 @@ int main(argc,argv)
+     unzClose(uf);
+ 
+     return ret_value;
+-}
++}
+\ No newline at end of file
+diff --git a/contrib/minizip/minizip.c b/contrib/minizip/minizip.c
+index 7f937aa..0b54fb6 100644
+--- a/contrib/minizip/minizip.c
++++ b/contrib/minizip/minizip.c
+@@ -393,7 +393,7 @@ int main(argc,argv)
+                   ((argv[i][1]=='o') || (argv[i][1]=='O') ||
+                    (argv[i][1]=='a') || (argv[i][1]=='A') ||
+                    (argv[i][1]=='p') || (argv[i][1]=='P') ||
+-                   ((argv[i][1]>='0') || (argv[i][1]<='9'))) &&
++                   ((argv[i][1]>='0') && (argv[i][1]<='9'))) &&
+                   (strlen(argv[i]) == 2)))
+             {
+                 FILE * fin;
+diff --git a/contrib/minizip/tests/test_custom_io.c b/contrib/minizip/tests/test_custom_io.c
+new file mode 100644
+index 0000000..518dc05
+--- /dev/null
++++ b/contrib/minizip/tests/test_custom_io.c
+@@ -0,0 +1,154 @@
++/*
++    test_miniz_use.c 测试miniz库的定制io功能
++*/
++#include <stdio.h>
++#include <string.h>
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include "zip.h"
++#include "unzip.h"
++
++
++
++#define TEST_STRING "hello hello minizip."
++#define TEST_STRING_SIZE 20
++#define TEST_FILENAME "custom_io.txt"
++#define TEST_ZIP_FILENAME "test.zip"
++
++#define CHECK_ERROR(ret) { if (ret != ZIP_OK) { return ret; } }
++#define CHECK_RESULT(ret, v) { if (ret != v) { return ret; } }
++
++// custom io function
++voidpf custom_fopen(voidpf opaque, const char* filename, int mode)
++{
++    int file = -1;
++    int mode_fopen = -1;
++    if ((mode & ZLIB_FILEFUNC_MODE_READWRITEFILTER) == ZLIB_FILEFUNC_MODE_READ) {
++        mode_fopen = O_RDONLY;
++    }
++    else if (mode & ZLIB_FILEFUNC_MODE_EXISTING) {
++        mode_fopen = O_RDWR;
++    }
++    else if (mode & ZLIB_FILEFUNC_MODE_CREATE) {
++        mode_fopen = O_WRONLY | O_CREAT;
++    }
++    if ((filename != NULL) && (mode_fopen != -1)) {
++        file = open(filename, mode_fopen, 0);
++    }
++    return (voidpf)(size_t)file;
++}
++
++uLong custom_fread(voidpf opaque, voidpf stream, void* buf, uLong size)
++{
++    return read((int)(size_t)stream, buf, size);
++}
++
++uLong custom_fwrite(voidpf opaque, voidpf stream, const void* buf, uLong size)
++{
++    return write((int)(size_t)stream, buf, size);
++}
++
++int custom_fclose(voidpf opaque, voidpf stream)
++{
++    return close((int)(size_t)stream);
++}
++
++int custom_ferror(voidpf opaque, voidpf stream)
++{
++    return 0;
++}
++
++long custom_fseek(voidpf opaque, voidpf stream, uLong offset, int origin)
++{
++    int fseek_origin = 0;
++    switch (origin)
++    {
++    case ZLIB_FILEFUNC_SEEK_CUR :
++        fseek_origin = SEEK_CUR;
++        break;
++    case ZLIB_FILEFUNC_SEEK_END :
++        fseek_origin = SEEK_END;
++        break;
++    case ZLIB_FILEFUNC_SEEK_SET :
++        fseek_origin = SEEK_SET;
++        break;
++    default: return -1;
++    }
++
++    long ret = lseek((int)(size_t)stream, (off_t)offset, fseek_origin);
++    if (ret != -1) {
++        ret = 0;
++    }
++    return ret;
++}
++
++long custom_ftell(voidpf opaque, voidpf stream)
++{
++    return (long)lseek((int)(size_t)stream, (off_t)0, SEEK_CUR);
++}
++
++int test()
++{
++    int ret = ZIP_OK;
++
++    // init custom io function
++    zlib_filefunc_def filefunc;
++    filefunc.zopen_file = custom_fopen;
++    filefunc.zread_file = custom_fread;
++    filefunc.zwrite_file = custom_fwrite;
++    filefunc.ztell_file = custom_ftell;
++    filefunc.zseek_file = custom_fseek;
++    filefunc.zclose_file = custom_fclose;
++    filefunc.zerror_file = custom_ferror;
++    filefunc.opaque = NULL;
++
++
++    // zip
++    zip_fileinfo zi;
++    memset(&zi, 0, sizeof(zip_fileinfo));
++    zipFile zfd = zipOpen2(TEST_ZIP_FILENAME, 0, NULL, &filefunc);
++    ret = zipOpenNewFileInZip(zfd, TEST_FILENAME, &zi, NULL, 0, NULL, 0, NULL, Z_DEFLATED, 9);
++    CHECK_ERROR(ret);
++    ret = zipWriteInFileInZip(zfd, TEST_STRING, TEST_STRING_SIZE);
++    CHECK_ERROR(ret);
++    ret = zipCloseFileInZip(zfd);
++    CHECK_ERROR(ret);
++    ret = zipClose(zfd, NULL);
++    CHECK_ERROR(ret);
++
++    // unzip
++    char buffer[TEST_STRING_SIZE + 1];
++    buffer[TEST_STRING_SIZE] = '\0';
++    unzFile unzfd = unzOpen2(TEST_ZIP_FILENAME, &filefunc);
++    ret = unzLocateFile(unzfd, TEST_FILENAME, 1);
++    CHECK_ERROR(ret);
++    ret = unzOpenCurrentFile(unzfd);
++    CHECK_ERROR(ret);
++    ret = unzReadCurrentFile(unzfd, (char *)buffer, TEST_STRING_SIZE);
++    CHECK_RESULT(ret, TEST_STRING_SIZE);
++    ret = unzCloseCurrentFile(unzfd);
++    CHECK_ERROR(ret);
++    ret = unzClose(unzfd);
++    CHECK_ERROR(ret);
++
++    // check result
++    if (strcmp(TEST_STRING, buffer) != 0) {
++        return -1;
++    }
++    return 0;
++}
++
++int main(int argc, char* argv[])
++{
++    int ret = test();
++    if (ret == 0) {
++        printf("success - test_custom_io\n");
++    } else {
++        printf("fail - test_custom_io\n");
++    }
++    return ret;
++}
+\ No newline at end of file
+diff --git a/contrib/minizip/tests/test_memory_func.c b/contrib/minizip/tests/test_memory_func.c
+new file mode 100644
+index 0000000..2f93ae1
+--- /dev/null
++++ b/contrib/minizip/tests/test_memory_func.c
+@@ -0,0 +1,80 @@
++/*
++    test_miniz_use.c 测试miniz库的setUnzipMemoryFunc和setZipMemoryFunc接口
++*/
++
++#include <stdlib.h>
++#include <string.h>
++#include "zip.h"
++#include "unzip.h"
++
++
++
++#define TEST_STRING "hello hello minizip."
++#define TEST_STRING_SIZE 20
++#define TEST_FILENAME "memory_func.txt"
++#define TEST_ZIP_FILENAME "test.zip"
++
++#define CHECK_ERROR(ret) { if (ret != ZIP_OK) { return ret; } }
++#define CHECK_RESULT(ret, v) { if (ret != v) { return ret; } }
++
++voidp custom_malloc(size_t size)
++{
++    return malloc(size);
++}
++
++void custom_free(voidp address)
++{
++    free(address);
++}
++
++int test()
++{
++    int ret = ZIP_OK;
++
++    // zip
++    zip_fileinfo zi;
++    memset(&zi, 0, sizeof(zip_fileinfo));
++    setZipMemoryFunc(custom_malloc, custom_free);
++    zipFile zfd = zipOpen(TEST_ZIP_FILENAME, 0);
++    ret = zipOpenNewFileInZip(zfd, TEST_FILENAME, &zi, NULL, 0, NULL, 0, NULL, Z_DEFLATED, 9);
++    CHECK_ERROR(ret);
++    ret = zipWriteInFileInZip(zfd, TEST_STRING, TEST_STRING_SIZE);
++    CHECK_ERROR(ret);
++    ret = zipCloseFileInZip(zfd);
++    CHECK_ERROR(ret);
++    ret = zipClose(zfd, NULL);
++    CHECK_ERROR(ret);
++
++    // unzip
++    char buffer[TEST_STRING_SIZE + 1];
++    buffer[TEST_STRING_SIZE] = '\0';
++    setUnzipMemoryFunc(custom_malloc, custom_free);
++    unzFile unzfd = unzOpen(TEST_ZIP_FILENAME);
++    ret = unzLocateFile(unzfd, TEST_FILENAME, 1);
++    CHECK_ERROR(ret);
++    ret = unzOpenCurrentFile(unzfd);
++    CHECK_ERROR(ret);
++    ret = unzReadCurrentFile(unzfd, (char *)buffer, TEST_STRING_SIZE);
++    CHECK_RESULT(ret, TEST_STRING_SIZE);
++    ret = unzCloseCurrentFile(unzfd);
++    CHECK_ERROR(ret);
++    ret = unzClose(unzfd);
++    CHECK_ERROR(ret);
++
++    // check result
++    if (strcmp(TEST_STRING, buffer) != 0) {
++        return -1;
++    }
++    return 0;
++}
++
++int main(int argc, char* argv[])
++{
++    int ret = test();
++    if (ret == 0) {
++        printf("success - test_memory_func.\n");
++    } else {
++        printf("fail - test_memory_func.\n");
++    }
++    return ret;
++}
+\ No newline at end of file
+diff --git a/contrib/minizip/tests/test_miniz_use.c b/contrib/minizip/tests/test_miniz_use.c
+new file mode 100644
+index 0000000..ce97fa9
+--- /dev/null
++++ b/contrib/minizip/tests/test_miniz_use.c
+@@ -0,0 +1,100 @@
++/*
++    test_miniz_use.c 测试miniz库一般使用
++*/
++
++#include <sys/types.h>
++#include <unistd.h>
++#include <string.h>
++#include "zip.h"
++#include "unzip.h"
++
++
++
++#define TEST_STRING "hello hello minizip."
++#define TEST_STRING_SIZE 20
++#define TEST_FILENAME "miniz_use.txt"
++
++#define TEST_STRING2 "hello hello minizip append mode."
++#define TEST_STRING_SIZE2 32
++#define TEST_FILENAME2 "miniz_use2.txt"
++
++#define TEST_ZIP_FILENAME "test.zip"
++
++#define CHECK_ERROR(ret) { if (ret != ZIP_OK) { return ret; } }
++#define CHECK_RESULT(ret, v) { if (ret != v) { return ret; } }
++
++int test()
++{
++    int ret = ZIP_OK;
++
++    // zip create new file
++    zip_fileinfo zi;
++    memset(&zi, 0, sizeof(zip_fileinfo));
++    zipFile zfd = zipOpen(TEST_ZIP_FILENAME, APPEND_STATUS_CREATE);
++    ret = zipOpenNewFileInZip(zfd, TEST_FILENAME, &zi, NULL, 0, NULL, 0, NULL, Z_DEFLATED, 9);
++    CHECK_ERROR(ret);
++    ret = zipWriteInFileInZip(zfd, TEST_STRING, TEST_STRING_SIZE);
++    CHECK_ERROR(ret);
++    ret = zipCloseFileInZip(zfd);
++    CHECK_ERROR(ret);
++    ret = zipClose(zfd, NULL);
++    CHECK_ERROR(ret);
++
++    // zip append to exist file
++    memset(&zi, 0, sizeof(zip_fileinfo));
++    zfd = zipOpen(TEST_ZIP_FILENAME, APPEND_STATUS_ADDINZIP);
++    ret = zipOpenNewFileInZip(zfd, TEST_FILENAME2, &zi, NULL, 0, NULL, 0, NULL, Z_DEFLATED, 9);
++    CHECK_ERROR(ret);
++    ret = zipWriteInFileInZip(zfd, TEST_STRING2, TEST_STRING_SIZE2);
++    CHECK_ERROR(ret);
++    ret = zipCloseFileInZip(zfd);
++    CHECK_ERROR(ret);
++    ret = zipClose(zfd, NULL);
++    CHECK_ERROR(ret);
++
++    // unzip
++    unzFile unzfd = unzOpen(TEST_ZIP_FILENAME);
++    char buffer[TEST_STRING_SIZE + 1];
++    buffer[TEST_STRING_SIZE] = '\0';
++    ret = unzLocateFile(unzfd, TEST_FILENAME, 1);
++    CHECK_ERROR(ret);
++    ret = unzOpenCurrentFile(unzfd);
++    CHECK_ERROR(ret);
++    ret = unzReadCurrentFile(unzfd, (char *)buffer, TEST_STRING_SIZE);
++    CHECK_RESULT(ret, TEST_STRING_SIZE);
++    ret = unzCloseCurrentFile(unzfd);
++    CHECK_ERROR(ret);
++
++    char buffer2[TEST_STRING_SIZE2 + 1];
++    buffer2[TEST_STRING_SIZE2] = '\0';
++    ret = unzLocateFile(unzfd, TEST_FILENAME2, 1);
++    CHECK_ERROR(ret);
++    ret = unzOpenCurrentFile(unzfd);
++    CHECK_ERROR(ret);
++    ret = unzReadCurrentFile(unzfd, (char *)buffer2, TEST_STRING_SIZE2);
++    CHECK_RESULT(ret, TEST_STRING_SIZE2);
++    ret = unzCloseCurrentFile(unzfd);
++    CHECK_ERROR(ret);
++    ret = unzClose(unzfd);
++    CHECK_ERROR(ret);
++
++    // check result
++    if (strcmp(TEST_STRING, buffer) != 0) {
++        return -1;
++    }
++    if (strcmp(TEST_STRING2, buffer2) != 0) {
++        return -1;
++    }
++    return 0;
++}
++
++int main(int argc, char* argv[])
++{
++    int ret = test();
++    if (ret == 0) {
++        printf("success - test_miniz_use.\n");
++    } else {
++        printf("fail - test_miniz_use.\n");
++    }
++    return ret;
++}
+\ No newline at end of file
+diff --git a/contrib/minizip/unzip.c b/contrib/minizip/unzip.c
+index 5e12e47..5fbe9c7 100644
+--- a/contrib/minizip/unzip.c
++++ b/contrib/minizip/unzip.c
+@@ -108,11 +108,14 @@
+ #define UNZ_MAXFILENAMEINZIP (256)
+ #endif
+ 
++local unzip_malloc_func unzmallocfunc = malloc;
++local unzip_free_func unzfreefunc = free;
++
+ #ifndef ALLOC
+-# define ALLOC(size) (malloc(size))
++# define ALLOC(size) (unzmallocfunc(size))
+ #endif
+ #ifndef TRYFREE
+-# define TRYFREE(p) {if (p) free(p);}
++# define TRYFREE(p) {if (p) unzfreefunc(p);}
+ #endif
+ 
+ #define SIZECENTRALDIRITEM (0x2e)
+@@ -1566,6 +1569,7 @@ extern int ZEXPORT unzOpenCurrentFile3 (unzFile file, int* method,
+         pfile_in_zip_read_info->stream_initialised=Z_BZIP2ED;
+       else
+       {
++        TRYFREE(pfile_in_zip_read_info->read_buffer);
+         TRYFREE(pfile_in_zip_read_info);
+         return err;
+       }
+@@ -1586,6 +1590,7 @@ extern int ZEXPORT unzOpenCurrentFile3 (unzFile file, int* method,
+         pfile_in_zip_read_info->stream_initialised=Z_DEFLATED;
+       else
+       {
++        TRYFREE(pfile_in_zip_read_info->read_buffer);
+         TRYFREE(pfile_in_zip_read_info);
+         return err;
+       }
+@@ -2126,3 +2131,9 @@ extern int ZEXPORT unzSetOffset (unzFile file, uLong pos)
+ {
+     return unzSetOffset64(file,pos);
+ }
++
++extern void ZEXPORT setUnzipMemoryFunc (unzip_malloc_func mallocfunc, unzip_free_func freefunc)
++{
++    unzmallocfunc = mallocfunc;
++    unzfreefunc = freefunc;
++}
+\ No newline at end of file
+diff --git a/contrib/minizip/unzip.h b/contrib/minizip/unzip.h
+index 6f95e94..663d12f 100644
+--- a/contrib/minizip/unzip.h
++++ b/contrib/minizip/unzip.h
+@@ -430,6 +430,11 @@ extern int ZEXPORT unzSetOffset (unzFile file, uLong pos);
+ 
+ 
+ 
++/* set customised mallo/free functions */
++typedef voidp (*unzip_malloc_func) OF((size_t size));
++typedef void   (*unzip_free_func)  OF((voidp address));
++extern void ZEXPORT setUnzipMemoryFunc OF((unzip_malloc_func mallocfunc, unzip_free_func freefunc));
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/contrib/minizip/zip.c b/contrib/minizip/zip.c
+index 4e611e1..2bad0ed 100644
+--- a/contrib/minizip/zip.c
++++ b/contrib/minizip/zip.c
+@@ -58,11 +58,14 @@
+ #define Z_MAXFILENAMEINZIP (256)
+ #endif
+ 
++local zip_malloc_func zipmallocfunc = malloc;
++local zip_free_func zipfreefunc = free;
++
+ #ifndef ALLOC
+-# define ALLOC(size) (malloc(size))
++# define ALLOC(size) (zipmallocfunc(size))
+ #endif
+ #ifndef TRYFREE
+-# define TRYFREE(p) {if (p) free(p);}
++# define TRYFREE(p) {if (p) zipfreefunc(p);}
+ #endif
+ 
+ /*
+@@ -848,72 +851,71 @@ local int LoadCentralDirectoryRecord(zip64_internal* pziinit)
+ /************************************************************/
+ extern zipFile ZEXPORT zipOpen3 (const void *pathname, int append, zipcharpc* globalcomment, zlib_filefunc64_32_def* pzlib_filefunc64_32_def)
+ {
+-    zip64_internal ziinit;
+-    zip64_internal* zi;
++    zip64_internal *p_ziinit = NULL;
+     int err=ZIP_OK;
+ 
+-    ziinit.z_filefunc.zseek32_file = NULL;
+-    ziinit.z_filefunc.ztell32_file = NULL;
++    p_ziinit = (zip64_internal*)ALLOC(sizeof(zip64_internal));
++    if (p_ziinit==NULL)
++    {
++        return NULL;
++    }
++
++    p_ziinit->z_filefunc.zseek32_file = NULL;
++    p_ziinit->z_filefunc.ztell32_file = NULL;
+     if (pzlib_filefunc64_32_def==NULL)
+-        fill_fopen64_filefunc(&ziinit.z_filefunc.zfile_func64);
++        fill_fopen64_filefunc(&p_ziinit->z_filefunc.zfile_func64);
+     else
+-        ziinit.z_filefunc = *pzlib_filefunc64_32_def;
++        p_ziinit->z_filefunc = *pzlib_filefunc64_32_def;
+ 
+-    ziinit.filestream = ZOPEN64(ziinit.z_filefunc,
++    p_ziinit->filestream = ZOPEN64(p_ziinit->z_filefunc,
+                   pathname,
+                   (append == APPEND_STATUS_CREATE) ?
+                   (ZLIB_FILEFUNC_MODE_READ | ZLIB_FILEFUNC_MODE_WRITE | ZLIB_FILEFUNC_MODE_CREATE) :
+                     (ZLIB_FILEFUNC_MODE_READ | ZLIB_FILEFUNC_MODE_WRITE | ZLIB_FILEFUNC_MODE_EXISTING));
+ 
+-    if (ziinit.filestream == NULL)
++    if (p_ziinit->filestream == NULL)
++    {
++        TRYFREE(p_ziinit);
+         return NULL;
++    }
+ 
+     if (append == APPEND_STATUS_CREATEAFTER)
+-        ZSEEK64(ziinit.z_filefunc,ziinit.filestream,0,SEEK_END);
++        ZSEEK64(p_ziinit->z_filefunc,p_ziinit->filestream,0,SEEK_END);
+ 
+-    ziinit.begin_pos = ZTELL64(ziinit.z_filefunc,ziinit.filestream);
+-    ziinit.in_opened_file_inzip = 0;
+-    ziinit.ci.stream_initialised = 0;
+-    ziinit.number_entry = 0;
+-    ziinit.add_position_when_writing_offset = 0;
+-    init_linkedlist(&(ziinit.central_dir));
++    p_ziinit->begin_pos = ZTELL64(p_ziinit->z_filefunc,p_ziinit->filestream);
++    p_ziinit->in_opened_file_inzip = 0;
++    p_ziinit->ci.stream_initialised = 0;
++    p_ziinit->number_entry = 0;
++    p_ziinit->add_position_when_writing_offset = 0;
++    init_linkedlist(&(p_ziinit->central_dir));
+ 
+ 
+-
+-    zi = (zip64_internal*)ALLOC(sizeof(zip64_internal));
+-    if (zi==NULL)
+-    {
+-        ZCLOSE64(ziinit.z_filefunc,ziinit.filestream);
+-        return NULL;
+-    }
+-
+     /* now we add file in a zipfile */
+ #    ifndef NO_ADDFILEINEXISTINGZIP
+-    ziinit.globalcomment = NULL;
++    p_ziinit->globalcomment = NULL;
+     if (append == APPEND_STATUS_ADDINZIP)
+     {
+       // Read and Cache Central Directory Records
+-      err = LoadCentralDirectoryRecord(&ziinit);
++      err = LoadCentralDirectoryRecord(p_ziinit);
+     }
+ 
+     if (globalcomment)
+     {
+-      *globalcomment = ziinit.globalcomment;
++      *globalcomment = p_ziinit->globalcomment;
+     }
+ #    endif /* !NO_ADDFILEINEXISTINGZIP*/
+ 
+     if (err != ZIP_OK)
+     {
+ #    ifndef NO_ADDFILEINEXISTINGZIP
+-        TRYFREE(ziinit.globalcomment);
++        TRYFREE(p_ziinit->globalcomment);
+ #    endif /* !NO_ADDFILEINEXISTINGZIP*/
+-        TRYFREE(zi);
++        TRYFREE(p_ziinit);
+         return NULL;
+     }
+     else
+     {
+-        *zi = ziinit;
+-        return (zipFile)zi;
++        return (zipFile)p_ziinit;
+     }
+ }
+ 
+@@ -1083,6 +1085,17 @@ extern int ZEXPORT zipOpenNewFileInZip4_64 (zipFile file, const char* filename,
+       return ZIP_PARAMERROR;
+ #endif
+ 
++    // The filename and comment length must fit in 16 bits.
++    if ((filename!=NULL) && (strlen(filename)>0xffff))
++        return ZIP_PARAMERROR;
++    if ((comment!=NULL) && (strlen(comment)>0xffff))
++        return ZIP_PARAMERROR;
++    // The extra field length must fit in 16 bits. If the member also requires
++    // a Zip64 extra block, that will also need to fit within that 16-bit
++    // length, but that will be checked for later.
++    if ((size_extrafield_local>0xffff) || (size_extrafield_global>0xffff))
++        return ZIP_PARAMERROR;
++
+     zi = (zip64_internal*)file;
+ 
+     if (zi->in_opened_file_inzip == 1)
+@@ -1697,7 +1710,7 @@ extern int ZEXPORT zipCloseFileInZipRaw64 (zipFile file, ZPOS64_T uncompressed_s
+     if (err==ZIP_OK)
+         err = add_data_in_datablock(&zi->central_dir, zi->ci.central_header, (uLong)zi->ci.size_centralheader);
+ 
+-    free(zi->ci.central_header);
++    TRYFREE(zi->ci.central_header);
+ 
+     if (err==ZIP_OK)
+     {
+@@ -1959,7 +1972,7 @@ extern int ZEXPORT zipRemoveExtraInfoBlock (char* pData, int* dataLen, short sHe
+ 
+   int retVal = ZIP_OK;
+ 
+-  if(pData == NULL || *dataLen < 4)
++  if(pData == NULL || dataLen == NULL || *dataLen < 4)
+     return ZIP_PARAMERROR;
+ 
+   pNewHeader = (char*)ALLOC((unsigned)*dataLen);
+@@ -2005,3 +2018,9 @@ extern int ZEXPORT zipRemoveExtraInfoBlock (char* pData, int* dataLen, short sHe
+ 
+   return retVal;
+ }
++
++extern void ZEXPORT setZipMemoryFunc (zip_malloc_func mallocfunc, zip_free_func freefunc)
++{
++    zipmallocfunc = mallocfunc;
++    zipfreefunc = freefunc;
++}
+\ No newline at end of file
+diff --git a/contrib/minizip/zip.h b/contrib/minizip/zip.h
+index 7e4509d..b1d8e30 100644
+--- a/contrib/minizip/zip.h
++++ b/contrib/minizip/zip.h
+@@ -360,6 +360,14 @@ extern int ZEXPORT zipRemoveExtraInfoBlock OF((char* pData, int* dataLen, short
+         zipRemoveExtraInfoBlock(pLocalHeaderExtraFieldData, &nLocalHeaderExtraFieldDataLen, 0x0001);
+ */
+ 
++
++typedef voidp (*zip_malloc_func) OF((size_t size));
++typedef void   (*zip_free_func)  OF((voidp address));
++extern void ZEXPORT setZipMemoryFunc OF((zip_malloc_func mallocfunc, zip_free_func freefunc));
++/*
++  set customised mallo/free functions
++*/
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/crc32.c b/crc32.c
+index a1bdce5..2093803 100644
+--- a/crc32.c
++++ b/crc32.c
+@@ -98,13 +98,22 @@
+ #  endif
+ #endif
+ 
++/* If available, use the ARM processor CRC32 instruction. */
++#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32) && W == 8
++#  define ARMCRC32
++#endif
++
+ /* Local functions. */
+ local z_crc_t multmodp OF((z_crc_t a, z_crc_t b));
+ local z_crc_t x2nmodp OF((z_off64_t n, unsigned k));
+ 
+-/* If available, use the ARM processor CRC32 instruction. */
+-#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32) && W == 8
+-#  define ARMCRC32
++#if defined(W) && (!defined(ARMCRC32) || defined(DYNAMIC_CRC_TABLE))
++local z_word_t byte_swap OF((z_word_t word));
++#endif
++
++#if defined(W) && !defined(ARMCRC32)
++local z_crc_t crc_word OF((z_word_t data));
++local z_word_t crc_word_big OF((z_word_t data));
+ #endif
+ 
+ #if defined(W) && (!defined(ARMCRC32) || defined(DYNAMIC_CRC_TABLE))
+@@ -1086,7 +1095,7 @@ uLong ZEXPORT crc32_combine(crc1, crc2, len2)
+     uLong crc2;
+     z_off_t len2;
+ {
+-    return crc32_combine64(crc1, crc2, len2);
++    return crc32_combine64(crc1, crc2, (z_off64_t)len2);
+ }
+ 
+ /* ========================================================================= */
+@@ -1103,11 +1112,11 @@ uLong ZEXPORT crc32_combine_gen64(len2)
+ uLong ZEXPORT crc32_combine_gen(len2)
+     z_off_t len2;
+ {
+-    return crc32_combine_gen64(len2);
++    return crc32_combine_gen64((z_off64_t)len2);
+ }
+ 
+ /* ========================================================================= */
+-uLong crc32_combine_op(crc1, crc2, op)
++uLong ZEXPORT crc32_combine_op(crc1, crc2, op)
+     uLong crc1;
+     uLong crc2;
+     uLong op;
+diff --git a/inflate.c b/inflate.c
+index 7be8c63..c1a1dcc 100644
+--- a/inflate.c
++++ b/inflate.c
+@@ -101,6 +101,14 @@ local int updatewindow OF((z_streamp strm, const unsigned char FAR *end,
+ #endif
+ local unsigned syncsearch OF((unsigned FAR *have, const unsigned char FAR *buf,
+                               unsigned len));
++							  
++#ifdef Z_INFLATE_HOOK
++local inflate_hook_func z_InflateTaskHook = Z_NULL;
++void ZEXPORT inflateHookFuncRegister(inflate_hook_func func)
++{
++    z_InflateTaskHook = func;
++}
++#endif
+ 
+ local int inflateStateCheck(strm)
+ z_streamp strm;
+@@ -653,7 +661,12 @@ int flush;
+     in = have;
+     out = left;
+     ret = Z_OK;
+-    for (;;)
++    for (;;) {
++#ifdef Z_INFLATE_HOOK
++		if (z_InflateTaskHook != Z_NULL) {
++		    z_InflateTaskHook();
++		}
++#endif
+         switch (state->mode) {
+         case HEAD:
+             if (state->wrap == 0) {
+@@ -764,8 +777,9 @@ int flush;
+                 if (copy > have) copy = have;
+                 if (copy) {
+                     if (state->head != Z_NULL &&
+-                        state->head->extra != Z_NULL) {
+-                        len = state->head->extra_len - state->length;
++                        state->head->extra != Z_NULL &&
++                        (len = state->head->extra_len - state->length) <
++                            state->head->extra_max) {
+                         zmemcpy(state->head->extra + len, next,
+                                 len + copy > state->head->extra_max ?
+                                 state->head->extra_max - len : copy);
+@@ -1267,6 +1281,7 @@ int flush;
+         default:
+             return Z_STREAM_ERROR;
+         }
++    }
+ 
+     /*
+        Return from inflate(), updating the total counts and the check value.
+diff --git a/test/CVE-2018-25032.h b/test/CVE-2018-25032.h
+new file mode 100644
+index 0000000..28c365b
+--- /dev/null
++++ b/test/CVE-2018-25032.h
+@@ -0,0 +1,734 @@
++/* CVE-2018-25032.h -- Test data for CVE-2018-25032
++ * Source: https://github.com/zlib-ng/zlib-ng/pull/1208
++ */
++
++#ifndef CVE_2018_25032_H
++#define CVE_2018_25032_H
++
++static const char default_file_data[] = "OBXESYMXQLOTSVVWGIMGKKJOVTYKPPMYROFHSCXQPOFVHKBKAFYYAFTWCVOBPXWDSSFZCKBJOJUW" \
++    "PUQHKBNYZMCYEDEBXLAOREOASIEPAISNAZSXQKMWJSABFVSOXNKTGDCZKRSNBTWWGRNRZWGQEHKKQJGSGGFWJCETJVULWEJAQPAILMMQBVWJWMHW" \
++    "BSIOAXOQNEJYAQSPEOACRIFYOFHTBLZFSHOYGQFDGLLCDEHGPRAUFMANGCKZNZJBMEAEDDPZPJMMFEQGEUOHYFEQUKKHTOELBFUVDMNCEGPTLQYP" \
++    "DFTUGGOEUMUIAKAAZNXAEAKZREKXSZZAKFMHDZJFQDLLSILAMUHDQJTVMYIZWFEOPCKWVSXYDEOSGVWACWZNDDTOOYSFCOYHMCUSELFMSBJIUMPF" \
++    "OGDDJGHELQJSUAEEOWQEJMWRRBBAANVFEUMJZRQGDIWXOYXCZZLMDRHPJAYGUUJENSDDGBKDFRXMINPXRZJNAUPBIOAAKLMFUTZWAEWIBUTYOLPP" \
++    "NUWMFYJQIEMJYKVRNKRXGODFFRMMSKDBBKRJGUWOFMNKQPJLCCNDOTIWVGNWVIQINFPLJLEQRMNSVYFGNWMWYGKHBRSLPCCPHUNXIDKDGIELLDUI" \
++    "OXAJOZGIJVKGBJMGSCOHPRFVUPXJREGBMUXNSCBBRASVMNZHELWNHROPZGWIYMKESWGWNANICQTNICGQBJLAONQEEDEYUIGAOQCDTVBLSSACVCUA" \
++    "URKRLCYIHAYHZZCBVMLALYJKNVJTHYTFDDZVOQBUSDTPERXSTYJKCOGGFLBRQIARKTDBQHSFBBEEWYIEOOHUWKUGACNGZQMAHWPFJJOHMJGULPPX" \
++    "YTCIHIAVYTAHIZMBMYYZXBPLTRWNEDAALDOWVQLNFWZEVSDWQBBYHUYNOJYXVFQYGKSHGCRDPPRSVZWXECEXCWOYSBRWIBPZLHJKHWVTZYXEYGUW" \
++    "AXEUONCVLUGHLTCUTVSUQEVBRYYCIZESPFTGKDJKDQYNIXWZZYSCWIULGKVRJOLQNMWMKJKYOZGXFDUHXEFEFHUMHYKYINHXMINEEJAFYQLHEXBT" \
++    "TEBWGWEAWYODLKRFWATZYJXAFECXRPEDRKPJTJBHFQYFWLCYPMTASYYIHDGURAAUJYTKAMDUNZHXYGPHJVJPODIJAXYXONXEULMKEQRKUYAHLJLT" \
++    "VJUPMYUQSEMEKYCYBPNDDXRNZUQYHDBITAYHMBXSOETYJDWDAKRJGBIUSIUIKBQPSHOVDRCNSBUYDPAPAXBKHLIGEPMOUBYFXAMXDEASVXOUIMPV" \
++    "LCQQJRQNLIDVIRYOEXXIUASCSMSTQECGPPHPGDLJLCRJTWSHVOUNQNFTQEHOIQIUWTOFEIKBCWNLDYIJDUWPBIBBERKPKYYUWNIMOCMAUEVBLHBY" \
++    "LQEALQVTQYNTGASZMJWOPCUVKMJEZFKJZMCOORIKNUZQAPHVYTTSJUBBYFJJHTJRYCPRHVLZFPNXSSXXJDWDJQVSJVUKVWUYGPLBGUTBVLMNOFYU" \
++    "KIKIVBDCIKAKVEQIPBPQRLOSZXNIGIDKNGCLILUSTJXYFJZKRAJONNYAANNTWVDXYTIESYFRGQVIOLUBOHGNAGKAKZTRSYYIBADADFBHLJXDYPQK" \
++    "WAVHQGWZKKWUVAFWGXBEBNVPUDWCOMMSXJIVVLDHAWNUTQAPKVFGTYMOKTBDBQZTHHAWGRANXNAVWIOIPILFNUKUFVLNNLAFFPHBLFYMHYOZKABE" \
++    "YKKEDHYMBDIGAFUHTJOOIOWOLLKINJMOPYNNMBMRXNYZAHQYOTDNKWDIDBPSZJOEBQWPYHZZTHSFVJAQDFBJHBOBLOKJKIOEQTWPFSXZCKWWOXNE" \
++    "IDFXVWFPPEFTXLPHMFVPZYRKZVHHDWXVHCASKVDKHWNIUMJUEAAKSFYAGUUKLYGDVDPWMKIDQEUEDLZWQJLRSDMLSHKIOSDUQIDIAGIDEQZBUTVL" \
++    "PUFEXJCCJRGCFXNVXRRNSTWXCXEORNNMFJFJUMOWOSLUUYCOQKLTTUTVGSUCKXQGPHWFZOHALSARGDPDYOIFBXZCDEMHVNTDXTHZOZDOGCZYRXEW" \
++    "LWLPTMCTPCTYWJXNRGSYJDRCFIRRCLFSZMTVXMHASZQGVHHHFLGZKDGMGAHVNHXROKDARLQWIYXXRYTERPSEDVYETTARZTXOTUGAHTOHOOTMCJBZ" \
++    "KNBBQHAECEJFUEQQYXNXWBAUIESPQGIOEABZTMSUIVNUIOFYGLSTUVHKPIVBBHAPSDEXZPPAFSLSJSKGEGKXQZGZYYYBFHEKOQUZEMBMTLXLLAJM" \
++    "EFEWLECDLUWLMQLNZDXGDHRMCOOTGWXKTDFKFGEJSLUEYWDGRAONPHKSKCTXQZCEYMQSUIWTNCQLAMABCIZAAOJCLGRBWRFCQKSTYSDDYOZOSEPY" \
++    "BBVEKIFDJOEVAAZBYYKHPKNNWKNIGMIBUDADWHVKSWCMSWBKQAHBNFMWKFPRSBAJMJCAFAENZBVDSYGEPAYDMDRJOUZCGHQNDAQQZHSBMLPWOFGN" \
++    "NODEZZZSJUOOOPBYSEJFZOSJQGTSUBQCOTVNAXIZFMVJUFWGDDJWRBHDUTNQOSYJEWTEZXOYUQXKOZSBYEQKHOAEUEUYOMJLRHGQKKCICCLNIKCM" \
++    "AXLJZEWOYSTVZWXDXSXWVEWJRTDDJIDEWOYXXKGKBHDEPXZFUPVYWJDHXJENZANIEAUIZBXRIZFHMVKOUHRKRUALDIQSAOLIBFSRNBNFZHAUSGGM" \
++    "YSXJROAPNFXOWSFWNRJCAEFJDNDCRQDEOACSMGQQSQIVVVPSTTEPWFLQGJFOXUKFEMTQTUZRNMUPLLQQPNYAIIOMGQETSURJIJDOVGGWQDIKSGZY" \
++    "SJCSVPETTGRKXOXPMRPEMCXAXDDQTVOWDUGPKRCKRRCBRBDEMASKWEPIRHBKGOFGUNVXQMTSKOLAYJKMAGDLLMOPHDAHXBDQMYMGVVREVFLEZPXE" \
++    "XXFORECDRSTSWXGRNRQPSAXXIZXOQPDLEBDHDAUOMAGPFWVMWCQLMXDXKSFAJZBLNQLLRYDBYPWDWXFCTGFHNJVKMYONKAAGXCALJCRHZWYODYFR" \
++    "XVGVIGYJIQMUOUYPGDHFVEUTZRLFILMZXFRXHNELGMKVNYKNITXYHGZDGYGLXJXBODBAIITGQNUJOKJTAUDJFRKLEVFWBARAXPOPPXXDAFZBWAYF" \
++    "AQICNUIRRVRZURUHGWMXELBHDGYVRNEFNEFSPZUNOTCUNGFOAWYCMKVCDTNPIHWLJLWXVORXFNSKJVRAHBJCFMQHVMLKAKBQPMGQYUEPHLQSZJBO" \
++    "RIOJAPWJLHYBCXTMZPZUWJIZVRBOYWQIHRWXGYWQQZLTLNHZBSJLIBKJBQNNWSFLYVBYXUZFSGQZZYRPPKHYJCCYZBIEWATBDYLJLJGNCAUHLELJ" \
++    "ZVYRPJNFQIFLIGLEPQEVOVKASMSJZRUPZNQTWZJHXLVRBCNXKUXZCNQKHIJMBFPXNLPBPYUOWEIINXMUYGYRWPNQPBQPRFCBCIIKWKJWKQNRNZAF" \
++    "QCXUUZFPHBMQDSLYKQJKAJNAHBETGJPYAHMWHMNUJWMUHKZHPNPDZQEPDZZKGDQOUWIUPWSBPJQSBXAVFXJJUFTOCRKJGHKASOTJXBLQRKVOLJTO" \
++    "UUUYXQQNUSJCOILWWGYRJAZXXWCXAZFQITHUYREGZILSHQWSADJRTIVYTZSAGAXQHDZYZERPDHQOLOFAIWNLYACZRXKFKNOHQOFXFIKYWRRDPUFN" \
++    "TSBWQYGGQFNSRBPHBATAWCSVFANTUQIVFSEHGGELSJAUZFRBDEMBFXMFMOTENHPWKEVSIUOEPXPCKMSGDWWORTXBPTAOZPLNCKJUHEPBLCPRRXLG" \
++    "XUHKEKFIYXNJCYTNXMVEXNNAGESQWJGSFBCCQXLSXQJVVJUIZFNIUNAZCVCNUQWFPBCPRSLKIYLDOSOHOPABPMIVLSYIZKJHBCJXBTQHVEFIQHYE" \
++    "GYDMXWSNVWNGSAXBSDBCBDOFVNUFFVWGHHDBIGMNPFLGPGOGSUFYISQESRSSKCEKUTTUTNYYPLKSEYXIZGBPCQVRYGFKYVDYVKKIONENEULDVNMP" \
++    "KFKTAOBDKBCJBIWBKYLYESVCHCSCVVVWXLIMUDNWJQYJQJIGVGJXZQPUEGYTENAMCPDMAVXXOHZCNPWLKGRSQGCNXTPZNTWGFRDJIOSPAFNJHGUH" \
++    "XCDLWSWEHBXHOPAHBQMKECIGDGVGKRYRGLSIVCYQZAZJWGDJWIFUOBIHRENRDKEXQRJCSNMVTFQBJAIAKTPCBINZDYCRLPFSPCNQLDJYSQQWDNZN" \
++    "IEMYZCOIBALBGXXOLLRIVBDQUNXFLMGRIHDFDNCNCFBTKMOOQSLXSONNDFGNWGMAMGIHCDFZZFPAUCOBYJCOCHYVDKNDSOTVGMHSWHOQFCYXYIMF" \
++    "HJCVFCVJGATFWRYPYLEWTNFVTZDATIWNNRYQFTXDGQPPYQYOJJBYSJLADOODZYJIWPIWYQFTGFYESGCCOJFOSQWCQDULHBXAYFDJEJOLOBHTMGXG" \
++    "NFUUFMDIBXDYFVHLQDURYGCSHIYGYJHMJQUFIUBWAKDIFXQEUGYKIFMMSYKOMVNKCMTYXWIBEYNHQHNMYKSPSZTKPTDGMODMAXEHOABRZOSYYLHY" \
++    "WPIQQFMXODEYOAMXDWIFNLAVHTUHSCPJQGRMQNSIZQXNJEEFFVOYAZMQTPNBGKMXYFLYCXQVMXNITCYDMKNTBSNKPGOFRMAGENQZQEPUMRLHFIPO" \
++    "ZSJDOBQYSHDETQCBBLXJAMHIPPHQIIBNCAOCVCOHQAPYCYEJBIVWSJVIOFZYAKFYEIXVDVIVAXJZQZKUOCGGBAHHPVOADXHBWEQRMVRBKOONFLPD" \
++    "CKKBFFIZJIKRYMEWWYATRBVIIKBUACMLRTONKOUXMZCGSSYFCYMNTBVIENZQXDTYNZGOKCRENDDTNZOQRXLDVZXLOTFOVYAZEEHKXRDGECGCGXNV" \
++    "MYOKKNIQPCPRWRAHKVPZSKRBMEAAFDAWXXHJUBOUOYQWPLZGTMWWYFBGBNUAQBSRHKNUGGYYJOZNEOWWYZBMREVSOVTWVLUDCJWQGJPFHPTDHFEQ" \
++    "VJJIYARMBGCTSKXZQFGOXOXHMWBOHMEFKRWKJPOKUQRQLCHHPNWEPJFIAPSYAHXUPHYOAPABLLDFZOVSJFNNHVDPNWXPXFEYADEXFVRWKVBVCEOV" \
++    "MFIKPMABJUBGOGCDADYIEWZZZCANXEXMMFKHOWOMJRJTKBJPYRPHNKHPSQRJXJNQPORMUKIXNFRIXUGLECEJYZXSUFTROJJRAAHGUDXXSPKOTBUW" \
++    "JPMVUDQGBAPSQOWYDPVVEOISXLDKOPWANASRPSICRGBNHJQGPSFRPFOZYIRYEOFCQRZWCRYAARQBLEAJDQGQVIFGVCPFSEIBAUYXUXFQMNWFNLVY" \
++    "DFFDCVAISNQYGNCXLKXERSQKRJOFLTSOPRPQQONCVGVBLALFFJLSTSGNTHWHHBTNCFRQLWTGKPWIBWSUEVHWFHKAMBOQMZYGAZRAEJCFBEWEFLDG" \
++    "PMAKCQXCLFMBIVDECFIOOXPCTKCCJDZPECXVACPBOQVWNYAZGRIFJETXUABRDPOQOGZLWPLZETFWVYOZHYGSQVMNUMYIAPFCCJNQOVKZCEMMNFRL" \
++    "VTKDRUTDNAQXGPTWYGRCEOTQMLESJDAKGIZNSTADDAIMCUKZQLWYUPHWSQELFHEZOFGRBVUSOYZQMGJFBWWCGYBEFIHCCJKQOAFXAPJEMFJCVZAY" \
++    "ESUKQVKHGHGJMTBRECBCLFMCIIBJPIWFRROVXDCPTTEUFOMAFJUHXLAHELLPYCVZDPHKTVGLRVVUXDKISXVAIYEXVWLSQPGKGPYXLXIYQSPYEQZZ" \
++    "VHAVHSNASXOWRFMRSLNPUDTWYYPJRFGPJIGTZRTNXDLNAEKRBSZPMZHWPFPGLZVDTSAXANFKOPCNWSRWZMEBVUOCZEMLSYVDURZQUVRZOPKPJMRD" \
++    "QPBGLZCFADBWRWKABRGOMGKIOLZEAJHXIEIPINCETSTKEGEDYJNZBIWISBSDTZREGNOIXNYFQFPUBQLGWKHTJVSCTUHKYWZPSIIBJFKVQPPQCKIK" \
++    "NDEIRXHIBAPDDXYIBMWNUPOISTKFBXDELZFYBRVAMLLPQQXGMBMNBTJRCNCGGZMHIWKJNAFWYYCHEJVYVXPUWZHBWPKHMBJNGWWLXRRKPZHQLTPK" \
++    "GXLWZICJMFIVPRLSXVUOFLWNHFSZAUJTYFRTSPSDOEHFYFHTNZOLRTYIQJQSEEVREMWRKLEVXOGDQMQZQJWTHOYIGOJLJUFBSZJLHGYRRJSZRCNQ" \
++    "RCNVBDRCOYENFVWULRBHOGLLRKWMFXEZKBZDMDKYKFJRIHGUZOHBFOPJLMWXECZVXYZPYAIKYDDVWAXCMPKOTEFMIRXDOFFQCNAUBGHGYVFOCONJ" \
++    "WNXDMIANMLMJOIAHRPTVNYWLSQBBTNJLBAAQMTJXLXADGYLLMUZPCYFOGJGCJORRTGSRLDXYODWLVGHYBYLHCGPWWEYJPMSAQWNRNHPYLLHUJEZT" \
++    "RQYJVZEJFUQPVTIKFITRVXUODHQDNWOXVHXFWDVRLTKPJVKKEUMYFDOZJOSCHWQQTFKUFMFNQNDCRTVHSVOFPUOMVDEWGUASIKYZPJUGIDUDPTOV" \
++    "AYGMQWLGSUMCWOEKCGYOMZJNRVSUKJGYQBFZMUINTJFOQOVPHHJRNCSUPDAVMSSRCYMJGCGRRIKLAUTKOMWRNKOZETUTSKNRHXRNDOGXBGUGTIXO" \
++    "LEKKOTBAAYFPJHNWKUNMDFZUTRWTLWIBFJGMXMMZLHTJLWVVPAFGJVPKAPPIMTMTOBKXSXWOEWIWIIHPJGKDXCNSYUKAWUCBHJNYHIIDJZRPQPVP" \
++    "YIZZMUFCHOQGNXGAMHEULGHOTRFKFLRPAOYUQYSXLSVVHYXGBLSDOBBZRMXEQCBTNUOATVMYSTKGKQNEUUEWCWBNGWMWIEYDTLBVZHXDUUDXNHJR" \
++    "XOPSLPTTHSOGBGBDSNAJWCBJHZGIABQFONILLESWKMHLIDLBWIDWODZFFKCUHMPMBMYEJUGAIOECPPIYQGFNJCLAHJUQMNTHFJOFOJOTRJDXMGPJ" \
++    "YFVDCHLCPRMYRRLMQHQJYQLWMBDYFFZZYWSVVTBFMHXHEAWXYSXTWBNEZKDOUIHUQADPIUKUJXZYHUUUFIGBQIHNLRXUOVMEUSILBUBWEBQRQFQM" \
++    "HOWCEUVUXNNJLNNKGSSEQQZNBDVJYWXLAGGHSBUUFAKMYKRHCATRTMTMNEQHNQWUOPNAWHOCGIEROSOMDJJCQQLSXZVZRVKUALQTFJUOQWMATSZT" \
++    "QBDINTLRDTMHGPIAUONZVDRSFOTAFDNWLUCSYCKAYVCAAYJOZPHPDNIJOGBOGTDLNXHYEJAEECJFZNDMEIDSMGEWTWWSKWSQYEDZFKSRNPQZTGNY" \
++    "RTQVWDBGKJYVAEJZWSQAHWNOHNDRHZAUYXWSAMCNPJBYLNPIPNIFGXQDGRZTQPXETWLZDZVKIQILLEIZDDFLAPQFYFHTUHZIOYZLIGTJMFDATODQ" \
++    "NBIHQIOZUTQQGFDCSMSZAFKJFXXYTDGWDVMNLTBZCIDNWXWYXANDDGVPMWGCRHAQOVWPXHVWBQLSCXPPJDYQKLVDBWZBNATRXCPYBOHIGLREODDU" \
++    "VFWLRDSOXYICZPITCQXTJCYGNQPKZXGRHOEKOZTMAYZLUHUYPJKHHFTVSDKELBLVBFNULMMSIERUKEVLCMBRBBHOFGVFBIFFXSYKAMSVXDYUIOGB" \
++    "HLKNNXJTEWNDQJNRGJMKVPFRIJHKFRNTTDSPRECSOIFJUXSIEREFEIMXBMWSBGDJPVIUJUEPAQOOOQZGNZORAKQOVJKDAWSLXSJHQHUIASLQVJDW" \
++    "WXLNPVSWXOGMGUHLKOQUYMGTPKUUEEEHXZVMIBDQJSNRDDFZEOEMMOIJLEYDCDDXGPAYEMXDRXERZYPNHNWOLOTPCDDLLHQPLBHQDKTVJNMFGAWX" \
++    "DHAONUGAWQLTOQSCOMVAHYTYHXQVBKENQKNVOWAGEZVUVWVQKDQPERCLETOCMXIJXDMJRGCVAQUMWHDOUOQQAXOHBXJDRLYGEWUZTIMSTMUCZGOP" \
++    "EBSWIQGPGMTIEGWNGRQAUQQGSLVWKCZTZMOTUOVOCDYLPGZTMNVGHSAGHRGPVTEYZKBVUQNYTHTVMWIEMREKWBVRXLHEGZMHKIWOMOZFPXDPXXPO" \
++    "YFWRLUSBBFXRZWGXAIYYSQFEWQMWRHMYMLFFMBOGAZSDJRENVAQXGDCKMRQYQGWVIDECLOMNZYCCMRCLXWPUIWGNATOQZUYIRDXGCOGZIJRDBYBB" \
++    "NFMOEPYUUJYZJSGICOMXWBAUMEBJVWGTRDRYQGNONJZXSZDJLRAMLJLFTFZUVZZOEOLKFOGFODQBWYBRDMUKEFLKDUADCGKYTZUCVRUULXCXMKAZ" \
++    "CBCUQLPAWCHHIFIPIXFZRJHATGQCRWCCMSDXRHASKDKACAVAPMYIYUEXZFJCRPMOTGZJLCFOHJMRRCADBGLMQTBZAMGGLIULVTBOKKZTXRODXTAZ" \
++    "XQSXDHPVFFPFLMJKDJNQYGLGUNVIVUWJBCWDYASMCYPTPFZBVUCMUWAOYOUBZZTJEQNIZMPPEHRJPJJKAKHRNGIHUGRGZGRYCOIWXFDDHJKQHSOV" \
++    "NQLYZLABMFFWVQXBPNWNGYMYBLPTLLLFAPTNNBPLCKOIUBNPNCBHJIVUAVRENTTPRWXENQAOUPPEMSOIOLXMQFIAYVPLSCZLYDIOLZIUCBIBYNAW" \
++    "SOUQXDYZPQQHWAQLZCJSRDUUPEKFYWYEFXOHSILHHIJDERCNZEPHGODFOECPZONRLPCFKGUXNFOPVGSQCPWNMAVTPMGSPJRRFIHYXQAGJQWYBBBG" \
++    "TFAAODFFZKDGCEZTHQNZKXKQWFSJKIKTWBZWWRFYIOVWXXZYYMPLUJZETDXGJUASQTPZVBPYKHJLHSCONRZWBUZESWAOXWUMPORTJCQULFBHWIOU" \
++    "OPZIPLZRDCWOCQXHPKNHOYXHTKOFFVIZLGMJMKXQLYEURGMQZRCQGPPLUDLECVBNVBHAWBITJYAVUJKXPAKZDBJGMOFUVOYVAESRHLQVZRDOZPZD" \
++    "WJDWGNXBEQVIKHYIXRIANMIJARWDSAGDKQCYRGZZOFEGXDCMWCNYHDFPOYKSZIGNWIUBSAXPGPDRKERFWILYDILHHXGKKWEWCLLUQDODMHSAHQTO" \
++    "XPLMTTVXRIVIRTJRQFXQHTVREBIXOLZSFNUBXRFSQHSBFHUMMTNVCNRDCAQPSYKEUYHULCSKSYULEQYMQHHKELFXQIPWPEBNBCLVBYEBTQQAZKHW" \
++    "JGIHDVFZHDSHCZPHCWOKRWGSLGCOZEAYLTFJSEBTMOELSJXEGJGCOQPURSZOGOANVZVBTTGLPJYSNUSJUCACWAUTJIAIMIAHLMTVRYONFWCHRYGL" \
++    "SJITEVEFHCQQKLVXMVMAQNEKMKRFJIEUZAPKXDRTHBKEDMSCMNZHOSLFUTXUIDFPKOWRDRADBCWFDZSAJOYSLZMRFLOPUHMXOEECQDNRDPUXFQPO" \
++    "YAKWHIQWIFVNOOAQQHGUYVZRFCLYJYYTROCMSRKXLBHMCBACUNCYLMEWEHTUPFFRJEJAWKHYJUWBUQRKFMHOYSBSMZVIJNRUSEMSMXLPQAKAYVGC" \
++    "FARNHOHWTKINTCYLVNWRGALUZBIQQFMQGBXKAEUFDMVOTJLZGOGMIDGUUSACUMFMGFVDZIRWAWFXDBNJZJAOAMXFVBNMJBEJNMYVOJWLSBFISAKM" \
++    "COVAKYHBPHHGLYSLZLHPDFCQRPFKUOXKFXZASEPZLMITPDIDENSDCGPFRQKGEZQNBMVWMDGUJMPHMPZAAMSAFRQGYAAGXGUGKMLVMZSSQSREGSOV" \
++    "WUXGQIQXNVIDJDHGSKNCWYOUOEWGVESAKGSMGBGEOZMIUYOPIAJXTBQNXEGCXMVHMOVNHLBFKQFNLOEKISQFNEKNDLGBIBAOEWNBALNSIKGZPWOM" \
++    "LAMTQZPCGLCTPDHFQBNXWFTAPXFRCKHHGLPXKDIXEWPYWOAIAHYJEVXCGFBVROFIVDABRSAHRXGALKMXWARMJZMNBFAMSNXOXOFYMFIXDLEUOBQE" \
++    "HZCXRZYJNEXRDHJZSWZMGAKWIGKYXGQFSEAXTXUWHOKWKINLVBVPTHQULCWKGWKJTWVWODZFFVMTJIATOYRHKRUDKVHJPJJDFJKICWFLEICXOKTG" \
++    "AYYLBWZONTDEEHFZYNPAAJHFOPZJNRWTEECVMRCQIJZPTQNEQDTNKLRPNUWYPFFDVEIWRGQFXUHIGRTZWLLAAGODSELKYMRIYAURIJSMJCCACPVA" \
++    "WMJVJHYNPHPDBSGSXPRNLFOMRPPPTPIMRQAZFEWPFTEDNIBANBUGMSCPJURJZSZBLFYLFDHVIJMLWOQRUOEIQSZYCBVEALSIZMSRNRSBJROLAYNV" \
++    "RHYBDPZQEUBXAJXIDJYRMGULISLPLHLTOONHKYRHRCYNYZFZXIVGMYXNFMKLVQNOYOIQISIUHUTUJIGAFKENBJWMCLGEZNTSMHNUFZLUCJTITIHA" \
++    "ZFKXDAZBRUFQXWJEMPTDVLXBIXDPLBPHLZGEYYFVRLZBFOIPHNVVFOJZBGYMRYLMXHJQVDQSFWDNLRKBHHUXWHGRCCDPNVSCSVLXJLHARQZFNRKF" \
++    "HVNKATOKZNTIZSERSKNJMKFSIEMWLUXHRKDFGMOBALHUXOYJRSVAHZUFMZNDHTMYKKPCMIVWBENKTXEBRHJUGMRXHHRWVVCTRTIRQPILWKAMKGJI" \
++    "GMQRZJITFOVHLYGOFANJGQKSTVBCGBVJWRTDABQOUGNXOGBERVOHCPCXCOTREQHMLGLFRLFTDDADUJZZTZCBKATKUAPTRQUHGWFUILCISGGNLCBC" \
++    "AJGKXIXZQCCCJPKKVMNXEDCRANPMFFOKGSPDFAFQQCTEYVAUVUUENWWVQQGHGCHVDGSWPGBPPISWUPEDNODLWQXNSHYQAWJANXNKACXXTNGBJIHH" \
++    "ZSBDIBHSGPZGTWXGQVPWEBCREOZPAFHNFANHLHVCYNZQMIOFOVSCHXXCQQSIZMXTBFCULNPCUGZMLWXSDAHRFENSWJVWXFCATCDXZKYQRHCNQDFG" \
++    "RDAGCYDIGPYWSSPTSJZOSCOXEBOWXNQXUGQBTUTSDKHEXNRKAWPLUVGWVPEBMGBQLMKHHNWRDOPCUZZGBNHBODDNLQOWRWFBMXDWYIXIXGGZWIYU" \
++    "KXWRIPBDCLQGKMHBHRSUJOYNBXOMVYQPLBLHEIHQAGKYXTADCVLXKGZXBAXLOXWBSLRMMMTPTXQRYFVFTHNKXDFYOEKCVMHINLNACPQNFHVPYMDS" \
++    "UHGTSWJVZHSMNXONFFYCEZUEGMLIBIUGTRMWQGVXUZCRUYAXCMTXCCGDHSTIREDATCUSTBHGAURHOPAYKCYHOVTVEYWPYGXBSVTQAFGBRNVEDMXD" \
++    "UTWXXFWUOSMBOKJEGSPSFRYBRXYFFCJVEMEYPKSHEXHUBRCHZTIPPTMIYKRDSUJGICXPGATHUNVMVKLEXEROYTRMYOGCQTMJWLSQMAWUUIQBDRNC" \
++    "CEMHWKKIVIEKCVBDEHKRZARARXLTVASSMHGDTTWDVYIJWITWJFILRABYGEOQPCHHFXXRFMOYKCPAQRPBOJJLADKVPDSMPTAXTMZJZQPMQOQBECGZ" \
++    "DDKBRLDMBZZEBJAFXGXJNAZDEFBCAXBEFXPSETVGQXRZBGFMBGECCBDBAWRYIVJOQIRNGNYZIRFOPLESXVYVGHKRAZQWCQWIKPBYLFZBRFGFDLYN" \
++    "BYZRYDVUOUXECTBFFAUESCYLBFGYJEZOBVQQABDOOTQCNUNKZLVOHEUSOXZWKYSKZSPQNVPAHTMXLLBOUURUXLFMYWKQGTPHXUZJRUOTGEABCBCN" \
++    "ZADCKOEIWZBWFUDMOLHAPQQNNARUOWZLADHNLDUPUADBBZACUPKDBXEFZOQEVWPJMLMYQWSFFHBYKSBMZXLMAAUAWFRWZGYUSDGCEGDFOWYPMWXI" \
++    "HVXKCLWEYXBVQSPMEQNIBBHQRKVLNKNQWEFAWUJSTMZTZYESSYIWLSHGCGRDSESWWIDWTOEXFFCYDLDNDNIEYLXZHIXFZSOQRBYSWLPVOWEEYMVD" \
++    "AGBZMAAAGMZSCMIQFOHJKCCAWJHAZXNIVBHIKKEKGUQIZPRLEXPCNJSTIQJOWUVRDIZTHFQCTHCWWMWYPMPMEIVFAUQOLINCKHXNBADPHNFVZOZW" \
++    "IQCYVUGVOMZTCJIRIPKVVZZPKQAZWCQNLPTAUVXJGKUOCJWUPPPHPAFQOTGJTFRFQVGOXHGBKQIPPAISJIZKBYNNPAXAGCMTXDYRYNQLMAEKYLOR" \
++    "YHPJJNCHFSHSUMEOPJNCFYOLONJQAGOAYHQKZXKEQOHTHUTBRISEINMZZZULVLGSNVJUCLQVGPTHPNCKHNRJPPCVMGWZPTIOACQWKUTTUDUAMIJF" \
++    "OZHNGNZHFHYWUFJEJLIWORKAGEBYCQKWGIFOOSVRDRFRQTQUHSZQSCIJUAFZTBWXTIVUFBLDCAJWFBKEPTVVXPZGOHNNNNWYLLIDZHYJGWHCJUBW" \
++    "DLBSXUICEZKEVBCPQGWVIKLTHGVWVAAQXXMGCFTIUGNSJYAMOWAOYGTYVYZPPBEMGGGZZQBUIRELHZXTZSYMNHVXTOIJRYOUOMZNNHGXJJKFMCLT" \
++    "GGRCTEQSXWPZJPDECPUAMGXARWINTDXDDLSNHYQCGPSEDSNJITLKJLZRPAXGJOUMBVFMBRKEZYOEBETWXSZJYSQWFEQUDBPYNYSBRDJOKBFXXLXB" \
++    "NSSFZBJLEIICFMLFXTCOLAODHEAABUKRQHGYSEAZPWIJHZJUJMJIFVUZYBZKSJOFSOVQLYUEGDHVIUMAKLKQJQERNZLLYGEDQGDQCCFOKJWBUNGQ" \
++    "NSWMLPFWTXVGAWJMQNBDLYIMXCXNAHUECCILVTXWEMPMXNZQDVYMUWOVPRDOHDHSYKTYEZPMOFKWIXFCGXWHANETZSTTISMGHOMDCTTZIXOOCFRL" \
++    "FLIAXNJWVIMQWEGEZUARCLNBETGINFONHNOEHERRJPRYNBMCSSIXVHCISSUXUXINVIKIMCZNPXBIYWNWQDEZTXDREVXEMAWUASQJISTRTDJMLSQG" \
++    "LQVAURUKZICWNBXQJXSNBZEYKPTPJWSYDCXFZVPBPPSRYUOQQQDNFRQOWVYPIMZPBQAOHTZMCUGJLNILKFTCXQIHQCXBNEKMBPUNULWCNYNMCSFT" \
++    "ZZLWPCBUUGVEZYQYQADNHTDFUQWWLDQSBEUOJGLYBPNUMWCDPAAFMGMWFIVLDMXFQWCUGMTMXSGKZKHJGSKSHPHGSIFVQFDTCEBAEQBGCYXIKWJF" \
++    "NUSFOIPHVIVSDCKNPYEVPKWENBFHKYZYTEYULFTGUXCQERPDVDYRTGCOWLIWJMDJFDFHARDANOPOOOPJKPVALZSEYDVSABYLHLCLSQXBVDHVFSRH" \
++    "DKHKJWBGNLMVYKEEECQPPUWOEMPEXGYCQFNCDKMEGPBVUMEOMBEDMCQGSNDLHGMGDMTPSPYOHBZYNBBMPSOMAKEHVCSCEEENUFMTEDDKKCTOXTQV" \
++    "FQOJNSXOHWMMCNTOVFFXHHIBTOTRTBMJUXTAVBUKGCLCKTOJKAZYRHJCOXGGWGZQMJNGGTGFMEYFSYQPFGFOQHTCQBGIUZAJLJJTYLMVZUOJYCSJ" \
++    "FOXIZKOJSSGIWSBYYTQOUJDDELVCWQZXHSCGASBZQZSIMTPJHBVGXVPYLDNGIPCUXFAJILVPXTTBCSIEPABVBETVRCXDSDGPETFEFGKYDPABNJIK" \
++    "LMBINGAQJVPDKSRFOWARGITJKRALJENOTDNOFQDRUSKYOUGSJZQFHJAYKFCYNJGWTMYPREHKDXGMBQEKTEMTEBYVXYGGLSBWGAKJBQFEORFLJFYM" \
++    "TJLPPATMOUVESREKJRLOZBOHQLDKLJRHBPBHXVMBTJJOITGXMXGAQDATETWKYIKXENGMAEAMHYXRPPXBIUCEMSKSGPTIWSQDXDLXTPGEZVLENCQK" \
++    "BOMJMQEZFVDSJOFGSFEFVZVUPXSRKWYPNNHUDQSMFFZUIKCWVHGZSWFLXGLXDFSPITBEXVPFOALBIMXCAVIZUNBHDMKVGGXUUXANWXSEGTGKVBWX" \
++    "XGHVFIVLVAGVSVJJLKGXEYXYRMPIKYEFGNQKRXQEBMBADMLSRNIWBCAISXVDZVQHPIPXQLSKXSWUMMMAJOUXWSOEFHXZUEWELFVKKKIJYPRWVYPI" \
++    "JMYBZBDZZMTIJRKUGEGASHZASEJPUEYQJHIRXFQAHEUGWYDPGCJCAGBCLQLPGAPHDNVVWKJHBCKXNVBOJGOESBJTTQWZXGMUHBRLHEQHXOQFJMNS" \
++    "RYWZURFQSBXFCOHRHJNIQQOIBRQUWQHEGWIGSCWQYSEYDVBFFFJXYCORRBRULIJZUQEXQUMLNOMTRWSHCRSVFQSVKKSKVTRRAHLLYKUKGQXZCJHT" \
++    "ZAJQKRCYELVNGDPUACTERKRMHOREGYUMGLLIFEXTFYIUERCDVYDBJUMDDUHINQPYWOBHBDDPOTWPLDZPAVVZHPSEDESRDFVGRZETCMTGZFVGVVZC" \
++    "DZEUGYFSZZRPDBJVPARGTOCVPEQOVCMVOOJJUJCXBIBMNRDBAGOJBTHKZUAYPIRNFGNENKLQKJYHSFBPQCURRNZULGKXJTXWYOHUNXPPJWQLALYA" \
++    "CFUVYEDAOOJBXRBYGGDQWIWXONWLCMMIGGJNOVIEMZKGBHOELIUDVIDZMXODEZGLVCAKKDKZELECPGUIMAWROODHLMFSSKDMOQCIQBQJWGQBFUCQ" \
++    "LJUMRAKYBOEYVXCQTJMYCUZLOXQFPDWSRKKRUUVWUQOPZAUUMWZPSVQMCMLINZOXLFZNRJACEESVDVEBZZJPWNIJAIMKTBXRPSCPYVKTVDGLLRDZ" \
++    "OGTRIJSGQLOREUZRQJHJBEVFNXTFQZROKSHJUKXVAVOYGMWAWBYWSBWHYUCDWBNHWHNSKOXSLRTSRFAJHEWVLVQSPDSIHHONIBSPYLZPXTQKLVSS" \
++    "CELGVJCUWIVTFENMPTFMZWXSCXXOIDADDUGDSNFQVAVAYIJZLNYKNNLCEIPKFZPIETWFXXZXSFCUBRTPAEOOEKMCXACVBDBFXPKLBRZNFTQSHEOC" \
++    "ECHWESZZFXICIARIASHQQTLEENGCGBHHHXQDBUUBQYGGFGURYPWSMWUXXJHOPCXHSEJQHWNSMJBPYYVMUCSJEKAPFYPDMMSSFTTNYXTFQPYXJEPF" \
++    "EPSBODGVEKBZRXRQNODGBCSVEMWWYGQRTMYIVDFOIBBOCGLSFKIQGUDXNAHMVRDFPAJYDZNCHMDATHJRJXTWHTGBYUKTOPOSASGHTRZTTHPUNEME" \
++    "FTWDOSBARKQPQDUEUXUZBTLESCECMEIONDSXHTHBKBZEXTHFPQMMNCCUERGPBXQHBKCLAWJMAXNEEHSANEBBVTUBXRAYFSKTSUBORMFOMOJGGCCG" \
++    "DSCNWSEKZFSKEPFNTDFGCDZHGBEFXOUTFTTLSBLEFFPZYMHCKLKKITSTXOUGTIDAUKNXWFYRPHKDPWHACQGQFLCDTXXZKYDGDDPOBSWEMPAAVFCE" \
++    "XQJDCBOZIRSOWELVYEKWNGRMNGMOPFVVLVIOYDJJMWJGMZCMNGRPMLMNJLPZKFRVYSTRPQOPBKREYFDCIQJLQANHNOIUMHAJAEHAVGSMDSJRNGVP" \
++    "TRTFHWNXPZDOOLHYYMGALWNVZYKHPGFEZNGDGFUIEUNYQKEAICMFOYYLDRJQXCKQUILBITRHCUSQMCNSDDCLMYRQIAOMZFTFSYWIZUVEWBYRASNE" \
++    "ERBQQZRCLIMRCPFZBBEHYFKQQVIVEOZRJGVNGJMWYRXLUIUPNPOQXJPGXJHMLOKWIZYUGULZZOKEWWPGKOXAGBOUXMRMNJBDTOBSOBBNUQNAIOFB" \
++    "MNQPNSKTVKAUNPMXYDCGKNDXBVDFHJJSTTQKQDTTRLNAIFTUKMGHGBMMHHHQLLUKRAUINVQJMFIOGJTZXMGVCKYOUTKAWEPIXSGDZTCWIQSPZLOR" \
++    "MQFERHAQDXTYGYDCXCHGCSQGWMCWRSHYNCCCNJCLINIULDINOSIABUZNGXZRYWVPPAUBAPUZUKCKNSXFTIMGPNVQKLGNHVCDAASZOMZVDKKDUMSZ" \
++    "WJVKGODPMYYVZKQSQLUMFAIZWZJWTDVDLPDWYPXEMCEHSLGPGOPUPFPAFOKCUVRSPYCVKOUTZAAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNY" \
++    "RKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYX" \
++    "TRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGUUQBWHZNWCJFCQTTKLHWESYRSIQHCINUULFSXARVWHNEWPDCXP" \
++    "AZFHVFQGRWZMPHKZQMKVVFKKREAPSFGJMPCPDGEKNNLVEVOWIDDHTJZDIYBMWOBOSWHFITNIUEVEGGXDZYRAIRWTHSECVCCZETCBXGFWSJPHFLCT" \
++    "UNESIKYZKJCTZFOMBMWYHTTXRZKSTVNHJCQJCQLPHFANJTGZXOJRGGMYHXKQVCLBAAKUPWGUWGXEAHQBGJRKABJEUQUKOUABOVZDUKHRRXSBCRCH" \
++    "DFDUXCRZCYCHAZCEGPJFUATVHUHTAFLKSHRYVNYBVXUFUFYXIVGRBRUWPZZRGGNAURWMPKFLCJUGYBJHHTJHCNZQVDVLMENSPFDGHRSQNMFGMUXG" \
++    "PUOIFDXOCFCZMSSDCSILMEYHDIRXQWTOEGSTNXEVSGJGMSTTPKRKAYXHJZCTBTJICBESEBVQXQLRTILEGHXKEIWURTWYLNBFRCNQZUMPVBDVJFNH" \
++    "XKWAKGQGJQMEFFOQDDCQGGMWARKVJROXMKTECKOYWNAXCIVQUUWQCTTZWIBBMTMZGDJAJFNDLVCSALFREYMTHUGQWFYXALWTTDBLDRDZUVWGHBVD" \
++    "AAIQSJGTOUYWTNNFGAGSPGVREBHWDRRNWOFHHQCANZCVDCSHJMBHWRNNJIZWEYFEOKLCVAXDEGHSEUYZHPTFECVAJSFUSFMCGQLMASXUPQYQSNYR" \
++    "SDZVWZUXCDNVVPGAUQRGCQFSQSDEBWTXZDHVDXJMMNIYAQYXEPJVDKPKQBSMWLATYCUWYSYOJZHUDSXTCSHTRACDQOQSNCYLMXJBYBBWKSNHYAYV" \
++    "RLCWFGAZSEVBIUJETIVGHEBDPXLVFWWTCKOUCOAOPMUIRPYZCULRWRCTZLCGMGREFOGJMULHHHQQIAOXVBGVBXZOLNVAPPKFFHXZMBVVEUSQHJOG" \
++    "BNVHUSEDNVMRKVJCOTBCWULBAJBEYUTCVVHYZCXFVDALNLZOARGOCWBFVUQKKSLEMJRKQIHULBCYTZQNRVSLSTQHZAZTZZRTBVXTTHBZJAXCGRVS" \
++    "CRJSEEOJQXFAEAJECDWVEHTBYEIQNMLILIEAAHWBXHQXEDOJKYNBBMTWQDMLFKRQRPACBSRLULLNLMKETFZJAIWHMUOMTZQUXRXYLQWUWZEVJWSV" \
++    "WUZXOHMHMKCHEOIGTJYCLBYPIWOXTHBWDDXMDCMSLPTAGECGNUPHOZBBMUSISZUBTASDXWBZHFNWSWHODJOGCSEUIPWFELWENSKIOZCQRTWINQWO" \
++    "XNSSJVFTGMXIGZDVRGQVODWEVFPRFYQIRTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCO" \
++    "OASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHHECPGKZWYSJQYVIZZNDYTHHHAZQUQPKQQEJZDJOAPXOSMCB" \
++    "QMLGPUSNTWZOLTGHCBHVFMHHWMOIEWINCVJUCWMGOAPWLNFNOCDJRHJIWCMXOWKPLCATJMBKONEUJXGRSKQWTQWDUPCITOFMCIYVIIEEBCIKARCZ" \
++    "HNVYHWQWPFHUPQWKDBHATSGTSDEHORZHLTZZUEMVPJUKSYCIDVSBPFIVDWUOZAARAZQXSQSWQEMKBDZPJLRRQPBRKJUJEICHUZOQUOGYWGUATEKL" \
++    "ZAZIAQVWNHYHMXVZDYACNLBIHHETCMNNTCTPRIFYKHNFHGVPFWRYFLKHFGPEDNQORZSVRAXADBTTEVRJSTJJACPHYXIKSXMYFUHKYTDQCXQVBEBV" \
++    "GALWFKWNECWXZPYEUDORKJEYWHVGUGMOTVSZVSSVCRIPERIBYAAKWYLEVWULZHNHUKLVYKJBQXKGZFGRCJRQCATTSQWZCYLDBSZDNAWLHVHWQULG" \
++    "SVAWFGTXNBEHRBBKIXYBQKJGORBFDCDVNPVUJLTGRURLAYCNPPAPNQSIRJPTMAJJSUVLTPVDLKKPWOLEGHKMEZSBYHJSOYMZDJDYUUYDDPJSLVXF" \
++    "DQCTZUWAKYOYLKBBLVPHMWYGUDHPUNOIGSBYSMQUIGXSYHNGQTSUKBWTSYIUUBPGYTCEZLKZSNEXYFNPUKCWAOTVKEIKZEQDHPYMHRTKXEWKXYYY" \
++    "AXUYQIWCSHAGDITDDOQAUPJOJORXTNFKOSCZJRENDFRCXRBZIQPZWDDTYZAYPUINWXLYZXJDOEGHSNPEGVCCHVQXARJCGFWISPUHKFMMRYEEASNK" \
++    "ZWXVJUPBZLLUEHNPCLAQWXBGQRBZCDHXBQZTUEPORJBQUPBDTIAWJTASIGTLUBSEOQNXAEMLNNAZIPCBUYSEWCIXLAYJUECBICMZWCNJBZVIMJYZ" \
++    "TDTIUGIMCJVDGEGCONXVRQYYIQHUWQGGZBDFPKZYLXGTIOPRGTHCJJKYDPHFIWMZMOTCEGEBDNLWEYWBKYRBRHTEYOLZQTWBIWTHPKZJMPMBGYSB" \
++    "MPJXRPABBVANDBQCTZORWDALOJJNJZYJWUEPHZOVEGRAFHBCRETBBBAKQUTIJNDCIBGNTZOXPGLVBNWSWWMLGOVKOQUXFAXZAQMPPKDSLQBUATEX" \
++    "ZRAOSDGOPNVFSPLSNKIECMNKKVYUAAEBGVFOFOATZCFMMDQAFYZTCZFCLWFUTDCPERAASRQVFREZNQXVWKQCAOFLOQMYLYUSMBDXGNHRXRWMUWVA" \
++    "GGHWHLJRGGEAGLXBKZRFXGDVJUFUGBHYRWHKVWOZJFRNZDZCSWZBQTXSDKDLJTSDXBOMUMRAFEBOCKLXOMATMUDBXOZYEVLWWEBBIBOSNBBBHIOP" \
++    "SNDOUDFOUYLOZQWJIOGFLKVZBOUPKIBJFCVNJJYWTUCZEMYJLQSBEPBYKUWFFURQZFKNHWROQLUSHRPNUHGIHQWEZXLYSSKGUTZYRHZCABLEEQXB" \
++    "JOLOJKFSYRCAJFFBCSWODYDVRMMQXRDQIKIEGLAWWVXNAVIUXWJFHBFWDJOICUKHNGPTLLPQYTBSFLOCJQVDHJRPIPBYOIOREUBRURYGLXOCCTZI" \
++    "AOVIXCMLOQLHZJMETCJSLONAGCECYXIXYVMPRWCIIATOULKAMNEKLJZWVZUMHUKJXTFLDSABAYZNGRLGAFGFUBHGXSJNPQVIKSKFASRJPAUFNWZT" \
++    "DIDBXTUSEJHYYRLPFVYLUEOWAWVTJYHXPPDEDUCUIEUROMPFXCAHYLAKPIXHJBINAMIYAFYZNJBWMTVEHDZCTQZQUTDASDXGEALLFLJIRJSGVUOB" \
++    "LVYDHBIMTNYLIARKTDGTLUMIGXQGTCXHHMADSQJAIMXICZQCHRMMJGUNIPMCBAFKOSKMWNGWPKKWKJTVIPTUAVTSFHJTJWTDGCTSBYWJGHGMAGGJ" \
++    "HPDMKCMHGAOYJAAQWYCBMPKUEYHOAKTMSLJXCKDAJMHKNAPGCZLDPGZRJYTYYIBDQKKOQHNXDBNTBEVUDFZIQXWSBCNTIKVNKAIXOJWBDAWBHICW" \
++    "TWBIPCTBEEWQCQGZYRVAEEJSLNHPCOTNMBQBMZCMOUUIMJNGCICCSBPUPEUIEUBJMGXTJLAXXFZRFFYWLKBUSUPWYESFIOLVITJEWFFKLTQUJCPD" \
++    "OBPLKBGLRGESJKSYMDRODNIRJMLUWVGEBVFLKJAZMAVSVVVVTFJDARCGVTNNGLUKHQWSMQWVIEGQMYRSBDOCQSUVWWDYBARBOAPQNRNEPGDASZWT" \
++    "HFPEJKXKRMIRDSLASFPLPJYEJYREHMZCBZDNKRJFWHJAEFIELHRNILJBSHRFEEKZXVLVCJNXTDVEHPHHBLBPGFSOOQGWRBXSOIQCBJXRJRBJOLUS" \
++    "UYIMVLVCTHNZVFBRDLFXRSJOTBRZZSOWAFXNXTSEYMTNMQZQQMZKTKWSZZAMWMXBGGDSYREZNERXNBRDYBRHLPNDOWFHRPILOMPUZTZNDZMOUXNN" \
++    "XBHTCTPQUVHDMWUXHXETYDEAJPXKSWMDHQANCXRYDCVBPBQYOZLSLUPHFNKBTYQMQAZRWBJOFBOHCSJFHVMOSHMDJNQSWNAYAYZCEJJWACRBJMMP" \
++    "AFMRTSHIRKKQNMVBRQRNWQGQCTZSFXYQYRDCABSPZARQLKCILMAKGBSMTLDBIXTKWFNTLNCZCHGAQRQKGPZTVSKIBZJWKXYACGPXKEAYBMABWNUR" \
++    "POQBFLTSFLYWJGVPFHATKCBVEZQNLIJUQUARLFCGVRXIXZSHHQHDHGBHQYQPLTNOKEZYGASUNTPKYXOTUNZMAGBUDKXIIAVLKJJLAOVWHQFXYNUI" \
++    "SYONOEKXPDDKUFRMDKHIHTAHPJOWMISGBOQKNDNJQVZUCPYUUIQXJSZAVIXNQNGIVQLSJJREJPHUQQYFXAKJKACWRFQBWBPLQJUYXHKIWJLFGVDG" \
++    "DSBDIVQRCOYZIQXZVYNQYRHEIYTKEBZIPIWHJTCHAAWXOCNFSOIIOFCFIEIDODTDJGFMCYBPZRBXMNSXAIVBQYOWOLUXSDXZGVJTRZIWZXQIOEBA" \
++    "WVPSAWPZNARJQLVFEOLOORFIGFQVEKPLCGIWCZOGSVLNGFLUFXQAHYUAONSXAVPEMPTZWIOHYBZSNGYVBWHMCGADBALGZBKGTSOQGSOSGACPXNNG" \
++    "RXFAZPLMBNNAFOOPMGICEPPFMGBQYNVQHLXBGHODWPHTWRAILPGVMBDOJSHQGGJUWGRVOTAANYDYGPBMDTHWDSTVJUCFXDHSJEKRDQEGYSRTRHYZ" \
++    "QPKPDGIGCAMCLSPTEWOSYMRSSLSKJEKIMDSVCGBBSLOMGFYHJTBQWXRJKSPXEBSEZAIZSLIYFFIJHZEXEBYAVQPDRIWVNJFPHGUXTDZBRQDIBEQR" \
++    "DIKSNHLVKMAUYZBKERVDNWWHSDKFCCBQIDZLCMFXPQNMFYTMGKQSMULFQACVBTWXBIDEQSYCVLOFWMRRQJKCFQTHHMMDWYKUVTFZMNVXWNJUZFAA" \
++    "WMSLFDOAYZKXPCTSUYFBSWNKJQTCWJKNRMLHUTFBRPHOWVEMIAKBWFVESZNWPHSHGXQBTSAEGBRXMFBTTUAXCIBPISWQKSLZCPOLQKPSLVHENGNL" \
++    "DMNGYCHIFBPEDOJHAPMSJSIZUEPYUVAYKWFLOVMSKKYZBTLWUGINIQTWIWGWATLDOCEYAPYBHSISMXLMQGNDBOPMKDJAJYXVHLVKWDWINMDBIJYQ" \
++    "EHUERVRXKUVPFEQZELXUEPFCKGWNVUIJXDQWMKCWNHDZMRPJJQQIHBUVJCZPBPAKDSEHNNKGPSNLCCUHSVJCJYKOIEFJSVPNWEUFDUUBMIKMZRWR" \
++    "DEIRNAHSRTTQKZGEUTJSUKVTAZLOVIVHQSVSGGQJSSFXEEEMPYRWGTCVBNZQVEEVDYUGFKFXJFOYCJDGPSXDLLGWVNBQFNWGAZJRLKKZHQESOVYL" \
++    "VOPPNIXNSEODDMMVAVZXQZEOMTIITKPFXOGTXZOVVENARVHJJYSUNXIHTJOKYWOTSVFYVGBWEDNFNUCAMSPAVZFFAALISTKEZXRBCTBGXFTBXWAN" \
++    "NNTLCTYQQYWTQECOCQNMKIYASENDBVTILDAJNZLSRYSOCKVHFLZJKVBDHXKBVOSZIIAUAUWUNVOYCXWYQGUFSTVBMHLQQZCIVZMUFIALQDINRRXQ" \
++    "VFEHQZVRLCBHUKOYYBTMRFXLTELHTKAOPUNZNYAUNCZOUKFVCUTHYKEXEXFYRVPSBSMSREEMBIEYVXULPUMIJQOQIMSWAYZKJYGVZRQMHMHVMIWD" \
++    "EUFPGKQUIRTZXJCSUAPQNAXHQCRUEFVYLUQMGAZMYSBJVNGQMQFYMDSJQZAGHAWYSMOWHGVNYCNCEBRADIJYCCPBFOJDCGEUVNOQTULFQZKWHDSU" \
++    "VHNMTUUQHQUUWLGZYXTBAKDUQXILCJJSASSHQHXUVJVVRLKJUEOUWBZLHDPXGIFQZWUACEKVFHXTQWQJUVJXUKUFSQGIXSMRKGDVJDQYQIBFJXSH" \
++    "GYJIZYHNBWLPUDTGGVSYYOFAKQDJINWKBAYGBKDKRVTXMTVKEYMUFKYOSHAITIDRHTOKNOJQQGZFTLLVYUNEGXNYKXOPZIFAMVYGPILRQVILSKGX" \
++    "MSLTYAUAGGHMSRXEMXDUZCHEVUXDVCDVAYXKEFRYZQCQXUWXHJKTXVYIPGCSXZTSCEHRFOGVEGRCSKLCNSCXHCOVQVKPILKBVRMAYGSEPDMIMNVW" \
++    "PMNUBNKITDKQTXBUMPZWPVYAXGDDNRHYJJTKYETYCTHIZZUZNSPEEHFGSXRRTQIKMYFKUQATOBVEPZRSTBNQWYPYGKSZDGMELRFTYXOGAIESGKUD" \
++    "WQWJTVJELSVCQGGCWKIKDFNHYUQJOVTWIWPQTVASNQMAUVCCRSFBLMKZIZLIOGRDZZYJAMBCMLACWLTWSXDQYTVRVQIVQPLQVHINOSRXUHMMAABW" \
++    "LJBEFTMFQLWDLDCJDXCLLSEMNKXXMXCELVRCHYAIFKTGNOQVJXHPBQRNLMUOGMWYUTUQQCELTWULVIWJMBGHVWSNLFCFSJMXICSZRPFUQMFFDXZE" \
++    "DMEQVJMBPZQNSBYIZUWUQCWPCRAUYUYKAYOBJPNPFYYFKUPYLHYZLCHGNWVFYGGVFZOBBACMNMVPSPIRIEDBKYKAPCRLULAQIOBGRBUOBPYETUBD" \
++    "EJUFZNMRCCQUEHPMRKFKPRKMQZUXDZABPGRJQWPBMDZCTGZAXTLVRBDDLOOQXVYMNWTRVEKHSIOXRRJEJXNCXJFXAQXQOAWEPUSCAYESKFCVSUGY" \
++    "JUMNSVXNYWUDYCCYZWBDUZIUVKCCWHVAMKZEUTYOPRRQHIILOICJJFFNQXLGJFJTKFIAMXBAVPLOWBZVXWWVRMFYFBCBEZTGRVYNJKUHMMCZYITP" \
++    "QIEPSBRPCZENVNEGFRXAHSRSENKGJQDAXRRBUADKZPYEBZCOHSSWGZMDDWIVMWKMJCOEHRFJKDMSSUMQZZLLPHBEFPHRBFFGBRTRXNIRYJVFVASE" \
++    "AUJUJDHNNQNNQMTDHGFWNQNUTNBGUPPMOUROMMAXPUQRJSYRYSGSPYLBVGKWXNDCQZRURGBSZOXEUBFSCFZGOCZJUVJDJFXDMLRQORZDRCCDHHWH" \
++    "BVEKCZLVICXSMKAMSBYWHLNHJYKIPCAVPRKZWTRTRBACHKSTANYJSBUXNSPGCZHRWFYKOYQDJBINSZCQCPYCJJLRLBFKZDKXXROLHCQFYWMCSHOL" \
++    "NVTMKZZHOJOWPFWUIWQNNSQXKUMTLJJRHYCZXCVHHGIVUGTDWPNNBGNPSAHFBHPKJLSBXOSHIBQTKBIWVPJNZQAFWWKXSTPYDQSQGWSPWBNXLZPM" \
++    "MJBRKJCRCXUTUGCKCHHENNEUJYAKZBLZPWWGGNVRQLGAIDBLMIEPHMZDDKNSLIESCVDHXTMSECJNSWZBVGFSLXAPQCJIPWHSWDXKRNNBCLYMVXYA" \
++    "SQVQMSWOJYFEVFXPQVBKYLKBQGFQBTZDNJJIKDDGYGUBJADPAZOYFAQYVMNXLUQCBWUOQEEGQUPOBLGNJJZNZOMEFDHWHABNCADZJHJLZLKBBOJC" \
++    "DPSFIQLWAHWAVBFIVEBLJGHYWGAXROBTWEWMTIWTZHRRAAJOAZVJFMOPZVRXDZKZWVKSEYLANBPMKIFELYCMNOBHAAUDZGRUPEHVDPURVRPSIBVC" \
++    "GDVANGLLWNTSDDDKXFEJIBMUKFUPQTQHXOIGJUTFWHLRAIZQCEUZDGRJQQLVDAPSVUCADRSWYAZUYEMPIUIUSHCMNRAKTVYBWNEDIJICJANHXDNK" \
++    "SDUPKUOTKISWGOENVLPUUSKHHIMHXFZRWLNETNEYRXCLGDHYMXCRGBXUIXMDCFSIXDWDYNDXBGZNDHBRYJPXVQWVSRYUFMLNWEITYZFERACAEFCT" \
++    "JSVBLZIGLAEDPPZKWKSDRXNEZMMIHRXUHIENABWZZTJMISHXCZNGBBJEVCQGFNODVDDYQGTPCCCNFTWTQKEYZBXJYCMVUCSCTKWHDVOBQLEPMITF" \
++    "LHCZCJGPAQVKDWBQAJWUCEUCNCATXJDSUGAHYOLKEZMBMDSWHOUXPLFQMCDXONRADVKLCJXJSBUXHTIAMWDRRVKLDEKWPMAGTBNTKQFJNUAGUPCJ" \
++    "QJOJICUCGGVDAWWWEBWVCVPWFVPDMKTSEDRYFEKYJKDWILIOINEZINFLEFSVLCCYVNLVCOBVCGZMLMVQDPSWQGWVPYSCEXALUMOOJBESGFIEGNIP" \
++    "UZPICIEYSAUFYVPJZOMXNPSSCNBOMUSRZWQJWIYNSPOERFOVRZILUIGVEAVGDXEGVATXQXZNRLZOFLACOJPFRMVIFCVFXCZVTDBTFCCMIQAQIZQW" \
++    "HEYBYRHGNLLEMQZRZAXGFUWJNOOYSSFYCCKYOYBLMKACMWZOVZKWIIHXADORGTSZGNXDVEIOMYSSWTXLNHFYWBAADLKMRYMFOUNIDRPRRCPKARTN" \
++    "VDRJHUZBGCOFVHATMAWILXJDHGQQXQOWBIZBBECQOPBTHFNGRQBDYMYBGKQXPZVNBSYTQNUWARJKPAVYTCVEIDNFNGXWFSDWEZPLDNOAEALDXYJZ" \
++    "ZPRYKXQIGVNHLVROALCSUCLQLWKDBDIANPWPIYSEXQDLUZFKHMODVRAPDGDYZIDQUAQMRYLYWTHDEAGGVUGSTOVHSCVVIIVEVVNCDNGPFIWHMDLZ" \
++    "KRTAEXEZAUPUWOFRHAGFYYKESPUSESYQGZUWMXOUNTNISBGXPLRDURUNTRHLRDLRDCUOPJNCGBECPGUQVERCWUDSTHAKJPLEXHAKKVSYBSAFHTCJ" \
++    "SGBWGSRBRMCBCOHBJXQBPLKRLJOVSGJXCOYHUOPSZZDBWEZINFVGWEONHUGMUDKKJYVJHQOHIBDVJMRTXJDIUEBNZKXYJJCZOGDATCFNUBTUOKOI" \
++    "PDAEPPLGDLKNUPEXYCRQMLNTVMTDQIYTLYZGNVNORDDPGZJYALPTUTVCDLMSVVSARMDMYTPTFVZJNLBJNOYFTGIAQERRWQBTPNWFICROJNCQYDJH" \
++    "TOZQLYDHDNTZZXGUWOUKGSKSBFBTVFHGCQXNEGRICJXTWSYHMLIFXHPKWSIQKXKMDFZBVAUKUOJBVSFVQXATTVLRIDYKLRWASMOFSKLEKYKCSJYZ" \
++    "OWXNFHRPXDYJINELNAVTRCXNGEAVPVBSHOODPSLADYLPYHPIIUJTEIVJEQCSCYTIHCMWLBZRQWMSJLPYPAGMBNIGKCQUQZIDPQGNPHGHYDXZEXRL" \
++    "IEBNKKPXANRKZEHWNXDQVREMFJFWYTRHDLGKJONRPSACNLFSAJUSQMWVKPGHBSQJZNPEURDEBZWAODMTEMLFGZFZTRLXXTGCKWZCZFGRSKQHQJVE" \
++    "CNHUIJSCXNOVSBIGSLXTXBIKNRMIFHSYAUMETSOBRVVNMOVEHUDDIRUAIKVETTCDOVJXRYHFDAQIAKODLSSUKHRKVGOAPIJMALIEIICODZQNJSWH" \
++    "YHYZPWMQGOCSPSSEAARJWGNIGRDCDJRTYRIHVYSVSMQQADMBDMJLVKOEDPDVRKSEHPOXBKXELETFCQOGGYERRZSVCSLXFJBKJTTXOSMCBVWUAXDS" \
++    "DYLEIZWIAJFIXGMSRLOOOSTJNNSXCQUPNXWKJUJULDKYTVSKPYCKUHLHBKURUKWRYTYNAFAHPNXFZQYPNUEKCNMDXRIZTHFZWYBEBRNLWXHEIHUE" \
++    "TXCVODZWNSDRJGYEPXZOCCAVKTNHOOOXVARRMJPEVLCQFFSNXYKCHQOSPEFDWHNJHYSLAZFQTTQJGGGGKOKMKRJANSIRZYDCJNAJQAOTNXUMUCTE" \
++    "HPANJAIQCNCSDWBJUBFUOAKDUDXDRTECSBLMPFATBMLKUMJHWUZXXZGBABOJPBAGYLJFEOEFWLUZEZHMPAOYDBDSZDZHEJBBUTRUJSNHTPKXDJOV" \
++    "JTUYNDYGNIFEAHGTGDFKDJJNWOUGOINVEVYSEQAOCAOVRJQVKPFYAQZSXCPUSVQKGZOQMWASQXHUOIMSYQYFWDRNQEXWBNVFFMDHVFDTLGIZTZRK" \
++    "SFXPZKPUXSYHUZJNFFLSSOMARTZXQWIRRSOOZCKWTQYWRJIMSAYTKZYDPLMHRLESJREGZHZEEHMFERPPRONWZOJRZQGLUGAQKJLZJOLUUQUFNHNL" \
++    "YFZACEUUQMJKZVBQAKNPJTDIXDWCYXBMLHQUXZORTUBLMWFDFOPOXCPWRMMGVLEEMHUBCPQXLGWGJPDLDYIWBMDNGTKPTBNSBDCPVJXFFZZYHMKS" \
++    "CQRPRXABMOZYCJZRQXYRSMMRXXPOGPVNIMHITFGUHAZRYJKRDJFOXRQZQMPQZUNDRBCGNLKDRCNINAJHHAEAFYERFVCQDQXLEMIKVVBTPGGAWZPE" \
++    "GXUMSBVPMOYJZYEZZICYUNYYZSMGQHLNOYACBELDAJFOCISTZAQTWAUKSMBWKIKOTVTDFLDSTRKKEOKFFBJZINVGPHRZJYXDJEIWKFSJLGXYYJEZ" \
++    "HKYGPCCHDCSSBETHIKPFIOJXQCFKBDIZZGOEFTBSVRRVBJTPUYVCBCRCKKTWRIPQMIWMMYGARUAGXKSUHZLMFRMMSIIFLYEZHMOYPRGHEHKEVHIK" \
++    "QGQNBAHIOJJGRYFVKONMGGYXSTZUNEOINSDVWIKJBHFNVNOCISHRGRVPWUFTHLRDTSLGYHMEWMXTRNQHRPTAHHWKWSXUBIYTFFXZEFDYTNPHEQLO" \
++    "DYJXUJXJFEOXTXUEBULAMCMBGYGDOIUBAHAHVOKKSEGIMYWBVDYWATSXFQTKQYZMEWFWEWCFVVZUSGTNWAQOUKWHKZNBWPAQGXIPBYBGJEMUAOJF" \
++    "NAKTJPLQATBELXZLSFAZROEDQUXBTYRBCVGPXFPMFDAVPUYHFKHSSOIECHBNTASPKZEODIPCLPRXSYUPLACJNFMREFPAKZNXVRGSBDMJZFSBJOMY" \
++    "JQXHPDJAUKOGPDHRNFHJCBJRPMOOLAXOLRHXAKFJSANZRGNXSYJHSHDOWSUZKANMRRHDAINXIHPDENKROYGWVDRJVBRSVJVJWAUJXGPJWVBPBIKT" \
++    "ZPMMXREPKOLVCHABTVPINFFGVPDUODKHDOEJUTLZYPEXPZNNGKYNLJIAHGODHFKGNHAKTHBCHXWPCURHGBUQCWBRTISQKNVHPEMMMVSKOKXRDPMM" \
++    "LYDIGUXGFJXLZXNDCSUMHLHLHWCOOYZBPAIUKADKSIQNKTDGPNXYBQPGYWLDXDCEKWFCYCVQIJKPNZAEANTSEVHCPIBWCKAQMUZDMQRMZITMPHKU" \
++    "NDHXXUKFMBHIAUVUFIJGGPAYXJRPCOWLVMVSPZXWNDSSXOQKTCVJYAUEVBBMTHWYLSWDOJTEGABUGTOIQPUKMJMALBZXXIJLVNRVRCJZQLTKCVLU" \
++    "LPSYFYJOIBYFANLCOXNLQYJOFQZDFRYIOEQMJGIRLFXTIVXPKQRZUQOSDTUGBTVQSXATNXMAYGNHSOWELEIATWUTKJUAPHFQUMXAYPJKNCXKDEVR" \
++    "TVNDVKHUQEIGIEMWBQANSYWFWZODJQTAQZKWYFSGFGEUESFSAWKELFZKHWBCFWMJSCIYKXSBXYMQEDTGDNAKKFYGZXOTLMHSHMCSHZJPSBZPWFLI" \
++    "JHFUEYOBJGGLXZPIIYPKBZMXFFOUANUWHGTIFKIZPEQPFUFETZYAHVXKSIFBSIHJXUJXYPKLIVXWNLNXDBIJXATRKCJPCEYICDDMVYIUIXGFXGTZ" \
++    "ZCYCFUUCMVQRKNUMCBVLKODKHXOWXPPGFNPMVBHDEGDFDFFRPKQJXDWUHUUJAIPZVYMADSLEAUSSPVFRVQZLABDREWXJMACDARFYLQGJPBOXNCDP" \
++    "NNJNVAJJMPQHOEYPZMRITBKCUXAKACMADODKWUGHGMZOXEKXKMZBZNQFFVMLKRNMQWLZRKWYIZVYHSACKIEUHSMIPVJZTZDYPAAMBVDGDMPHCBSX" \
++    "ZIPDUQXRIRPRBFSZKSLTEXPYUBMKTJHUBEUVSMCPKOBUKXNDLIHXDCRJVBXQVUIDMMOTDXGJVBDRJTJRQXZBRTJDOQHEUJVLGBXPJXIUVLWGCEPC" \
++    "LDIMHIANMUJWJMUVTAIICIDUWMJZLAAQGELUOFRTMBPJUVEBRNLERKQEDAXVAUFSZFLZIZSAWPGQNBRDVUBAVSCKWPRFFMJNVMHRUKXLRXDXQAYB" \
++    "NNBJYBJWYJKZSUDXMENYZREUHQTGFPAFSSCHVPQGEMFEJTAAANSYLAJEMJXAICCUPSRDYAQPACORKDOZLFZTJVJZEEMUTDRDMAWSFQKFYNEAXLEF" \
++    "BFLVLRRURDPHRTYAPYMQSKFIQRQQIPHPYJNCTEPQFVXQMKARRMLFJUWVCXLGCLINCSCNUYMJMSSDPTXWNHJZYMARNWSMBESIXKFFOSAYVUNMJGUQ" \
++    "TJLRFVMIJNCCDSGJEXYTKAXICMAIAXAPCYYDHCWBLMSBASJYZSATOOBFUIHAUBGZKDGHUNJJHNOKQSJWSLQJTDMQMPRKCOXZPQBKXSPCGDFOISXD" \
++    "POHGNLZSIPZZVYOGXMKQHNWIAJNEXRZWEAANWFAJEWXYVWKICBTCWVLKMOWUPNHULNYXILIPHZQVNUYJEHLBGVFDMFNGHCQXATSAPBWZEQKKNSRO" \
++    "WFWNYIGMDDRRBADJEZPJYGKONBWWFJVTGXWBNPRWZBKCRMSTTBIRUOILVDKALHNWBDYINQWFHOCFVFBIIUTSPOGRYRBNFFUTSOLFZPITVXCZFVRX" \
++    "DAXNWGQCKQSEVBHXVGTYZAVNZCEPTKIDZXHSFCZQLRUNXXZRAXQNRJOKRPRRUWBKKIQJELOGTNYIVISVVUHFJLSGBKFSOCAKZBHPXLHVSTESSQNI" \
++    "SMGBRZFURQSPSHHMMVBAMQXNKMTIOAQDUTICTSZZVJIORVOXYCFAXJWXLLPCDMASYDIUGUJTEXRBHCPWVQVBVDEIWEBJTOTKMOHPOZJJWTOBOMRZ" \
++    "KYACGTPMTRPCIHIZZOETYUAGVMMPYZHWTCQSXDDMYCOFUZMMLXYUPNNALAYKXEKBAKTBNZFHDKDPPUSAAHSEZKXUOVWLAUKGDQGSOJBBAYUFWTJH" \
++    "QUCKKQLRSAZQXDCLAJCGELGCJCKHPILUFUHNSZUBBZMXPPXVGKPZMLPREAJKYPLXMJIWDSDSLUUHUHWVWPLKNTOTAGYVFZPFRIETKHPNJFUHRTIW" \
++    "GINJTLTRVZJUOKGNFCEBACMJRLIFGLZERSJHFJKBJJVVXTANNRTWBWHJGPLYQIGIPJSDFVLEAURLKQGWJZATGJHJXLNVHAHUYBDLVLFDMJOLTBPV" \
++    "BLTVVGJLQPVMOCNUMTTADFFABWDGAVLBNBVUSVADDZRMVUMYXLNFLMHWXQUOIKXUNVGXXSJRFICDHGNNRPOADHIVQVSKNPJQGVDYLIBZFELOGFZN" \
++    "HSHPZKWOOBTLJOIWJKGMMDTHFJWCOPGUZTIJVPTECJXTIPMPSFYONVXXUYNBLODBWBKHEXRHUDJRENIPEEEGMWWHEQNQVLYRNFXKMYMDPMEHRKBB" \
++    "LRALSREVVDEIVBEOWIHRNGBFEALKHGCCLUPINRJJNJHRMLLPLFRCXVMLATRKZGKYSSZZTUUHYZJCYOGZMBGRCEEVCUCYNYZUGAXPCQIIUDPYGFAM" \
++    "FXATUYAXKZCTFCSXCOHVWEHHORWFWVURHHBZPZIQHXKLZFWFMSMBOAMEGBXMOHLWYRADETOJMMCDHXIQLWVVMUNEPGRVAUZKEVDONIAUZIXKVHWJ" \
++    "MGICGXTYYHFXIWDYJEXTFTELDAQVPPCLXPFFRTKWZSLLGZHUFNWMSIJIEQEMJZUFYUNBJWTFEJMHUVQJESUMNLYKIMSTTUQKDFWTRBHVPCZWTTQQ" \
++    "OHPSZXHPQWARAWPSMURVUOIRSCHKHQIFVKLQYLJFUVNZSKVLQSBBCXIGQPDQIHPADAHFFNYNLOUDHYXYKPXEMRYCDZOFQDARJJUXAFWLDVCCRWLE" \
++    "CVCPAHEUQRTJLJMIJJMXHQLYTIVFMRTJDPNYNTJPPESLJWJFSVKANKFZXVRAATUYPHTATXIZFSKAQBQSFKMQINHUXDWAXOTKMQBWWIOKOTVGLZYF" \
++    "EOICWPBITPCWQBGTYYTMKWIRRILOQCGOPLSGVPSADTCGFYPENZUJRHJTKPBHGQJJDGQRZGXHAPFTIPZOWWIZJLMDGIMFFYGWNFZGBCMBHPXAVFCZ" \
++    "FBZXIJKOPJRLSOKTDKBQSHXSGYPNUMVJFWZUJGFCYJFVPMUZUZPHMVWRGMBWBFTNFCMYGOANRPOOIPJPYHODMDDZTBJKQMNSLFBYPRYYEPAHAFFS" \
++    "RBAOYKNRDIVUNBKHHFFVQFAOTPPETBTCNJXGKQHBQYQBKBFXZDXBDMHJATIIYNEXADIDOJJHCHUFEQVKHSBEAREUBCQBSDXGPVQKKNKJWROBPDEE" \
++    "CYIMBZGAIJSERINSYOHWHIEZUOYEDCPAUFNTYYSFOLDYHKNVOGHURZLVZEFCWFLPCZDTBEQYXXDNAJKMTNRGVJZRWVUMGXTVQKZAPKNOLUOAYEUS" \
++    "ACDASMCRLFWIZAGTPEJMYLHDEZFCTAARZGYPEMLVOOIZDOTYTNEJEOIMWTIZXGCKOFTWKEMOJCNJDMFAQNYXHJBAVREKDSCMAXVYHOQNGRSRRKXY" \
++    "BMMAFGFLLPCKXUVDKSBJAQOXOGVGVYONMSUIRLOBIPXHXGKICITRONWQEGNCXFWFKMREYWZBXDCEXEXGTXGYFLOOCZKMLLQBVLQVCXOQAEVNLTGN" \
++    "XJGYUDEEPLQJFVTJIRGCYGEPODNJRRCHSMBRHDGJDHQYLHIEDAYBGAHOKKSBFUNZEOSLKPZNSDHLJPSJSBAIICYBADNLZGOCZVAKRKCTAVDQFKRS" \
++    "VIXYMKSGMQGKOCPVPXCQGMXCVOGEWCAIMZNGOIPPRMIAOMEWEIBJBJPTPOREQUNLMOIGOBTOWIEUAMDMEDFDWCAANRQUQGXMZUNJIZPLPUJTPOKE" \
++    "CFGQNVSDHWUHJSQWMYFWFGVIFMIPIAYCUTVJVWHDCRAWSNRXPCTAJZQZIIZTAXCVPRWLQWNFBVBNGJBUXGGXLUVWGAVOFOQTCDICONHCWYGFXSDW" \
++    "EGSZCNVJLLXYSQVJWYUGZWRQXACFMLALSNNJGZFIBCAIORHUKYBJPCOQPKCPTOUKMOLMJCGQUJRVLTSUWJSUIILGLSGWLLQGKFJJEVVUZWLDGVLV" \
++    "XSZXMSKTRIJLOTONFARWKIDCQCPXXZLUOYPWOHNUSJMUTAXMFZTELHQBSXKHKPUIXTEMCMKJACOZLPLATYZXIZNMURXMVWNSPQFUCDVDRYEZMIEB" \
++    "ZYOABCTTKLGBDSCVWWAQMUJYTXZFFFMHHKEOEORNSDGYIQPLSIEFOMXRQBGEYTCVIQARRCQUSTARLGZEVIQVQDRVMMCIWQEEBCIWKNNXCGBPAEEL" \
++    "MPCDQFMKFKAXVAGSKDPRXSZTXXQQQTGPLFLAUBOFMUGDIOZCEVABXEKOHUOYRNBXDOHIIUDDHQHDIHVVBOITYCNFFNULBWGLNZDKHNVAXMGDGDLS" \
++    "QRATNBKTBIOCXBPFTQRDLQGNNWUZFOYRRYJAPMQCQBXUWUBDVLICZJXVPHOHDYQENOMJGIPAYTBDYPMNNLBXGCAOXUNMFFPEVPFKUPGERNNDOZLF" \
++    "VKFCIBCPBUIMHOMCVVDKBVQIOVZQKBPMXABGNJGEPIVFIEDXYFXIDODKJZCXKNHVFQHUSFMJWXFBGRPDIPSMBVEOLMZGWNQLQUQIXKSKOOXTSPFJ" \
++    "EDBMAXHDPKEFAMASMLUJBNUKLEYIXPJEKYFTEKNFJRQDYGCHVTKCSEQTRUHPBZPWTEBGWEKXISBPUHEAFAEPLLVVUIFCLZRTUPMIAJVUVLTHOTFP" \
++    "MZZHEMOFWCBPBUVUIWAZOIHJBFZRDXJSACARXYBGNXKHMSKUAMKEALQWTWLMLZTQHGPNYUFKBLFBOZEWEVSSDOBPFAPYNNEXVPZOKKUGSQYFIAEQ" \
++    "JTYNLYOBQUDLQKZFVXQAJCCBVJWMPUUARURYPUQDCQOTOPBTTLLOEDPRWEKPPLKUEMCPBGDGJQOBXCSEVPYXUVNDZKVIUZLGJXDHOYQYDDIKSDZS" \
++    "LTWRDKTQMDSOHUWKFJPTEQUAULYGUBLSJRAJNEHSPLGUOORIZOMBTMYJUWBNJYBHNCPDKSKVENEMEAAACQPFLCPZVNOZSASBVDMAKTXATLKVXJCM" \
++    "ONWIOSQEVQGXFMHRMGOXBFSUVOJMSXDJBKSWJGWDFWSBQSNLCZYWNWZEIMWXBEMGSIMNAQHVFXLDNQNSWNEARIQXRHGYGNYINFFTEKMTCBOUWZAH" \
++    "YKFYFMNDURMGBHNCPDHUWKFJPUARURYPXYBGNXKHLQUQIXKSQHUSFMJWXGDGDLSQRAATYZXIZNMURKTRIJLOTONFOGEWCAIMZNGOIRLOBIPXHXGK" \
++    "ICIPAUFNTYYSFOLDYHFSKAQBQSFKMQINHUXCCRWLECVCPAHEUQRTJLJKBJJVVXTANNRTWBWHJGPLYQQSEVBHXVGTYZAVNZCEPTKIDZXHWFHOCFVF" \
++    "BIIUTSPOGRYRBNFFUTQJTDMQMPRKCOXZPQBKXSPCGDFOIPRFFMJNVMHRUKXLRXDXQAYBNNBJYLGBXPJXIUVLWGCEPCLDIMHIANMUJWOQHEUJVLGB" \
++    "XPJXIUVLWGCEPCLDIMHIASZKSLTEXPYUBMKTJHUBEUVSMCPKOBUKXNDLIHXDFSZKSLTEXPYUBMKTJHUBEUVSMCPKOBUKXNDLIHXDCAYPJKNCXKDE" \
++    "VRTVNDVKHUQEIGIEMWBQANSYWFWZODIJLVNRVRCJZQLTKCVLULPSYFYJOIBYFANLCOXNLQYJOHBNTASPKZEODIPCLPRXSYUPLACJNFMREFPAKZNX" \
++    "VRGSBDMSDVWIKJBHFNVNOCISHRGRVPWUFTHLRDTSLGYHMEWMXTRNQHRNSDVWIKJBHFNVNOCISHRGRVPWUFTHLRDTSLGYHMEWMXTRNQHRNVGPHRZJ" \
++    "YXDJEIWKFSJLGXYYJEZHKYGPCCHDCSSBETHIKPFIOPQXLGWGJPDLDYIWBMDNGTKPTBNSBDCPVJXFFZZYHMKSCQRPRXABMMPFATBMLKUMJHWUZXXZ" \
++    "GBABOJPBAGYLJFEOEFWLUZEZHMPAOYDBDSJWGNIGRDCDJRTYRIHVYSVSMQQADMBDMJLVKOEDPDVRKSEHPOXBKXEIYTLYZGNVNORDDPGZJYALPTUT" \
++    "VCDLMSVVSARMDMYTPTFVZJNLBJNOYFTCJSGBWGSRBRMCBCOHBJXQBPLKRLJOVSGJXCOYHUOPSZZDBWEZINFVGWNUWARJKPAVYTCVEIDNFNGXWFSD" \
++    "WEZPLDNOAEALDXYJZZPRYKXQIGVNHLGRQBDYMYBGKQXPZVNBSYTQNUWARJKPAVYTCVEIDNFNGXWFSDWEZPLDNOAERXNEZMMIHRXUHIENABWZZTJM" \
++    "ISHXCZNGBBJEVCQGFNODVDDYQGTPCCCNFTDRXNEZMMIHRXUHIENABWZZTJMISHXCZNGBBJEVCQGFNODVDDYQGTPCCCNFTUKFUPQTQHXOIGJUTFWH" \
++    "LRAIZQCEUZDGRJQQLVDAPSVUCADRSWYAZUYEMPIUIIWJMBGHVWSNLFCFSJMXICSZRPFUQMFFDXZEDMEQVJMBPZQNSBYIZUWUQCWPCRAUYVIWJMBG" \
++    "HVWSNLFCFSJMXICSZRPFUQMFFDXZEDMEQVJMBPZQNSBYIZUWUQCWPCRAURCHYAIFKTGNOQVJXHPBQRNLMUOGMWYUTUQQCELTWULVIWJMBGHVWSNL" \
++    "FCFSJMXICSZRPFUQMFFBWLPUDTGGVSYYOFAKQDJINWKBAYGBKDKRVTXMTVKEYMUFKYOSHAITIDRHTOKNOJQQGZFTLLVYUNPHOWVEMIAKBWFVESZN" \
++    "WPHSHGXQBTSAEGBRXMFBTTUAXCIBPISWQKSLZCPOLQKPSLVHENGNLDMNGYZKXPCTSUYFBSWNKJQTCWJKNRMLHUTFBRPHOWVEMIAKBWFVESZNWPHS" \
++    "HGXQBTSAEGBRXMFBTTUAXCIBPSNGYVBWHMCGADBALGZBKGTSOQGSOSGACPXNNGRXFAZPLMBNNAFOOPMGICEPPFMGBQYNVQHLXBGHODWPHTWAWXOC" \
++    "NFSOIIOFCFIEIDODTDJGFMCYBPZRBXMNSXAIVBQYOWOLUXSDXZGVJTRZIWZXQIOEBAWVPSAWPZNARJQLQYQPLTNOKEZYGASUNTPKYXOTUNZMAGBU" \
++    "DKXIIAVLKJJLAOVWHQFXYNUISYONOEKXPDDKUFRMDKHIHTAHPJOWMIHQYQPLTNOKEZYGASUNTPKYXOTUNZMAGBUDKXIIAVLKJJLAOVWHQFXYNUIS" \
++    "YONOEKXPDDKUFRMDKHIHTAHPJOWMIBHQYQPLTNOKEZYGASUNTPKYXOTUNZMAGBUDKXIIAVLKJJLAOVWHQFXYNUISYONOEKXPDDKUFRMDKHIHTAHP" \
++    "JOWMISGBHQYQPLTNOKEZYGASUNTPKYXOTUNZMAGBUDKXIIAVLKJJLAOVWHQFXYNUISYONOEKXPDDKUFRMDKHIHTAHPJOWMISHGBHQYQPLTNOKEZY" \
++    "GASUNTPKYXOTUNZMAGBUDKXIIAVLKJJLAOVWHQFXYNUISYONOEKXPDDKUFRMDKHIHTAHPJOWMISGDHGBHQYQPLTNOKEZYGASUNTPKYXOTUNZMAGB" \
++    "UDKXIIAVLKJJLAOVWHQFXYNUISYONOEKXPDDKUFRMDKHIHTAHPJOWMISGBGVPFHATKCBVEZQNLIJUQUARLFCGVRXIXZSHHQHDHGBHQYQPLTNOKEZ" \
++    "YGASUNTPKYXOTUNZMAGBUDKXIIAVLKJJLAOVWHQFXBFLTSFLYWJGVPFHATKCBVEZQNLIJUQUARLFCGVRXIXZSHHQHDHGBHQYQPLTNOKEZYGASUNT" \
++    "PKYXOTUNZMAGBUDKXIIAVLKJJLAVTNNGLUKHQWSMQWVIEGQMYRSBDOCQSUVWWDYBARBOAPQNRNEPGDASZWTHFPEJKXKRMIRDSLASFPLPJYEJYREH" \
++    "MZCBZDNKRJFWHJAEFAXXFZRFFYWLKBUSUPWYESFIOLVITJEWFFKLTQUJCPDOBPLKBGLRGESJKSYMDRODNIRJMLUWVGEBVFLKJAZMAVSVVVVTFJDA" \
++    "RCGVTNNGUBJMGXTJLAXXFZRFFYWLKBUSUPWYESFIOLVITJEWFFKLTQUJCPDOBPLKBGLRGESJKSYMDRODNIRJMLUWVGEBVFLKJAZMAVSVVVVTFJDA" \
++    "RCGVNPQVIKSKFASRJPAUFNWZTDIDBXTUSEJHYYRLPFVYLUEOWAWVTJYHXPPDEDUCUIEUROMPFXCAHYLAKPIXHJBINAMIYAFYZNJBWMTVEHDZCTQZ" \
++    "BHGXSJNPQVIKSKFASRJPAUFNWZTDIDBXTUSEJHYYRLPFVYLUEOWAWVTJYHXPPDEDUCUIEUROMPFXCAHYLAKPIXHJBINAMIYAFYZNJBWMTVEHDZCU" \
++    "BHGXSJNPQVIKSKFASRJPAUFNWZTDIDBXTUSEJHYYRLPFVYLUEOWAWVTJYHXPPDEDUCUIEUROMPFXCAHYLAKPIXHJBINAMIYAFYZNJBWMTVEHDZCT" \
++    "MHUKJXTFLDSABAYZNGRLGAFGFUBHGXSJNPQVIKSKFASRJPAUFNWZTDIDBXTUSEJHYYRLPFVYLUEOWAWVTJYHXPPDEDUCUIEUROMPFXCAHYLAKPIX" \
++    "HJBICTZORWDALOJJNJZYJWUEPHZOVEGRAFHBCRETBBBAKQUTIJNDCIBGNTZOXPGLVBNWSWWMLGOVKOQUXFAXZAQMPPKDSLQBUATEXZRAOSDGOPNV" \
++    "FSPLSNKIWUOZAARAZQXSQSWQEMKBDZPJLRRQPBRKJUJEICHUZOQUOGYWGUATEKLZAZIAQVWNHYHMXVZDYACNLBIHHETCMNNTCTPRIFYKHNFHGVPF" \
++    "WRYFLKHFGPEDNZZNDYTHHHAZQUQPKQQEJZDJOAPXOSMCBQMLGPUSNTWZOLTGHCBHVFMHHWMOIEWINCVJUCWMGOAPWLNFNOCDJRHJIWCMXOWKPLCA" \
++    "TJMBKONEUJXGRSKQWTQWDUMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGR" \
++    "TPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJX" \
++    "DSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSM" \
++    "TUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYU" \
++    "FQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKS" \
++    "DHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBOYRDCMLVOGPGMYJERFQ" \
++    "BGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQ" \
++    "WMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDO" \
++    "YORJMDOSNWTJVWUJKSYBQWLITMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDS" \
++    "CYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHRTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCY" \
++    "UFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHIRTMOYRDCMLVOGPGMYJERFQ" \
++    "BGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQ" \
++    "WLIMNVUIYDHHQIRTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGR" \
++    "TPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHHEYQIRTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQO" \
++    "BUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHHEFYQIRTMOYRDCMLVOGPGMYJERF" \
++    "QBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYB" \
++    "QWLIMNVUIYDHHERFYQIRTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCB" \
++    "XUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHHECPGKZPRFYQIRTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYB" \
++    "IOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHHECPGKZFPRFYQI" \
++    "RTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKD" \
++    "OYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHHECPGKVFPRFYQIRTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGI" \
++    "ZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHHECPGKVODWEVFPRFYQIRTMOYRDCMLVOG" \
++    "PGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJ" \
++    "VWUJKSYBQWLIMNVUIYDHHEQVODWEVFPRFYQIRTMOYRDCMLVOGPGMYJERFQBGYNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHM" \
++    "UOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWLIMNVUIYDHHECPGQVODWEVFPRFYQIRTMOYRDCMLVOGPGMYJERFQBG" \
++    "YNZTLAYSFNQSOQKSDHDUAYBIOGVLRNCYUFQOBUXGIZNKJQSMTUHMUOCOOASMHJXDSCYCBXUZGRTPKJJCSCCKEYKDOYORJMDOSNWTJVWUJKSYBQWL" \
++    "IMNVUIYDHHECPGCVVHYZCXFVDALNLZOARGOCWBFVUQKKSLEMJRKQIHULBCYTZQNRVSLSTQHZAZTZZRTBVXTTHBZJAXCGRVSCRJSEEOJQXFAEAJEC" \
++    "DWVEHTBYEIQNMLILIEAAHWBXHQXEDOJKYNBBMTWQDMLFKRQRPACBSRLULLNLMKETFZJEBWTXZDHVDXJMMNIYAQYXEPJVDKPKQBSMWLATYCUWYSYO" \
++    "JZHUDSXTCSHTRACDQOQSNCYLMXJBYBBWKSNHYAYVRLCWFGAZSEVBIUJETIVGHEBDPXLVFWWTCKOUCOAOPMUIRPYZCULRWRCTZLCGMGREFOGJMULH" \
++    "HHQQIAOXVOKLCVAXDEGHSEUYZHPTFECVAJSFUSFMCGQLMASXUPQYQSNYRSDZVWZUXCDNVVPGAUQRGCQFSQSDEBWTXZDHVDXJMMNIYAQYXEPJVDKP" \
++    "KQBSMWLATYCUWYSYOJZHUDSXTCSHTRACDQOQSNCYLMXJBYBBWKSNHYAYVRLCWFGCQJCQLPHFANJTGZXOJRGGMYHXKQVCLBAAKUPWGUWGXEAHQBGJ" \
++    "RKABJEUQUKOUABOVZDUKHRRXSBCRCHDFDUXCRZCYCHAZCEGPJFUATVHUHTAFLKSHRYVNYBVXUFUFYXIVGRBRUWPZZRGGNAURWMPKFLCJUGYBJHHT" \
++    "JHCNZQVDVLMJCQJCQLPHFANJTGZXOJRGGMYHXKQVCLBAAKUPWGUWGXEAHQBGJRKABJEUQUKOUABOVZDUKHRRXSBCRCHDFDUXCRZCYCHAZCEGPJFU" \
++    "ATVHUHTAFLKSHRYVNYBVXUFUFYXIVGRBRUWPZZRGGNAURWMPKFLCJUGYBJHHTJHCNZQVDVLMENSPFDIYBMWOBOSWHFITNIUEVEGGXDZYRAIRWTHS" \
++    "ECVCCZETCBXGFWSJPHFLCTUNESIKYZKJCTZFOMBMWYHTTXRZKSTVNHJCQJCQLPHFANJTGZXOJRGGMYHXKQVCLBAAKUPWGUWGXEAHQBGJRKABJEUQ" \
++    "UKOUABOVZDUKHRRXSBCRCHDFDUXCRZCLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVC" \
++    "KVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYBLRVDUFOARAOF" \
++    "KXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPU" \
++    "FYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXR" \
++    "LOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZ" \
++    "DKMTIFEJHQTEMIYVEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRC" \
++    "WEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJFEEBLRVDUFOARAOFKXFE" \
++    "SYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVP" \
++    "TEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLT" \
++    "INHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWR" \
++    "PDAYGNZDKMTIFEJHQTEMIYVARZJRWUKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBP" \
++    "JEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWU" \
++    "DDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJ" \
++    "DFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGCDKHFEEBLRVDUFOARAOFKX" \
++    "FESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFY" \
++    "VPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGUUQBRCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTC" \
++    "JSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYT" \
++    "ZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGUUQBWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLT" \
++    "INHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWR" \
++    "PDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGUUQBWHWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQD" \
++    "EFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIF" \
++    "EJHQTEMIYVARZJRWUDDXKMGUUQBWHZNMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSA" \
++    "GQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYV" \
++    "ARZJRWUDDXKMGUUQBWHZNWCBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBP" \
++    "JEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWU" \
++    "DDXKMGUUQBWHZNWCJFGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQV" \
++    "CKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXK" \
++    "MGUUQBWHZNWCJUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVO" \
++    "TUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGUU" \
++    "QBWHZNWCJFCQTTHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCK" \
++    "VOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMG" \
++    "UUQBWHZNWCJFCQTXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQV" \
++    "CKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXK" \
++    "MGUUQBWHZNWCJFCQTAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJ" \
++    "EQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUD" \
++    "DXKMGUUQBWHZNWCJFCQTAAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBR" \
++    "NBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJ" \
++    "RWUDDXKMGUUQBWHZNWCJFCQZAAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSA" \
++    "GQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYV" \
++    "ARZJRWUDDXKMGUUQBWHZNWCJFCQTTTZAAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFL" \
++    "ZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJH" \
++    "QTEMIYVARZJRWUDDXKMGUUQBWHZNWCJFCQTUTZAAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTINHRQXRLO" \
++    "SXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRPDAYGNZDK" \
++    "MTIFEJHQTEMIYVARZJRWUDDXKMGUUQBWHZNWCJFCQTOUTZAAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIHGMPTXAPLTI" \
++    "NHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIHALCQZAIWRP" \
++    "DAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGUUQBWHZNWCJFCQTTKOUTZAAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKSMLBUQYTCJSLHIH" \
++    "GMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRUHXARDSYTZTGDIH" \
++    "ALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGUUQBWHZNWCJFCQTTKLHVKOUTZAAXHUGBMWURCDKHFEEBLRVDUFOARAOFKXFESYNYRKS" \
++    "MLBUQYTCJSLHIHGMPTXAPLTINHRQXRLOSXQDEFLZEVHHSAGQBRNBPJEQVCKVOTUBGGOIRCWEEYQGCIPXJDFRZUPUTVXGMPSCOVBPUFYVPTEYXTRU" \
++    "HXARDSYTZTGDIHALCQZAIWRPDAYGNZDKMTIFEJHQTEMIYVARZJRWUDDXKMGUUQBWHZNWCJFCQTTKLHFYRPHKDPWHACQGQFLCDTXXZKYDGDDPOBSW" \
++    "EMPAAVFCEXQJDCBOZIRSOWELVYEKWNGRMNGMOPFVVLVIOYDJJMWJGMZCMNGRPMLMNJLPZKFRVYSTRPQOPBKREYFDCIQJLQANHNOIUMHAJAEHAVGS" \
++    "MDSJRNGVPTRTFHWNXPZDOOLHYYMGALWNVZYKHPGFEZNGDGFUIEUNYQKEAICMFOYYLDRJQXCKQUILBITRHCUSQMCNSDDCLMYRQWFYRPHKDPWHACQG" \
++    "QFLCDTXXZKYDGDDPOBSWEMPAAVFCEXQJDCBOZIRSOWELVYEKWNGRMNGMOPFVVLVIOYDJJMWJGMZCMNGRPMLMNJLPZKFRVYSTRPQOPBKREYFDCIQJ" \
++    "LQANHNOIUMHAJAEHAVGSMDSJRNGVPTRTFHWNXPZDOOLHYYMGALWNVZYKHPGFEZNGDGFUIEUNYQKEAICMFOYYLDRJQXCKQUILBITRHCUSQMCNSDDC" \
++    "LMYRQXWFYRPHKDPWHACQGQFLCDTXXZKYDGDDPOBSWEMPAAVFCEXQJDCBOZIRSOWELVYEKWNGRMNGMOPFVVLVIOYDJJMWJGMZCMNGRPMLMNJLPZKF" \
++    "RVYSTRPQOPBKREYFDCIQJLQANHNOIUMHAJAEHAVGSMDSJRNGVPTRTFHWNXPZDOOLHYYMGALWNVZYKHPGFEZNGDGFUIEUNYQKEAICMFOYYLDRJQXC" \
++    "KQUILBITRHCUSQMCNSDDCLMYRNXWFYRPHKDPWHACQGQFLCDTXXZKYDGDDPOBSWEMPAAVFCEXQJDCBOZIRSOWELVYEKWNGRMNGMOPFVVLVIOYDJJM" \
++    "WJGMZCMNGRPMLMNJLPZKFRVYSTRPQOPBKREYFDCIQJLQANHNOIUMHAJAEHAVGSMDSJRNGVPTRTFHWNXPZDOOLHYYMGALWNVZYKHPGFEZNGDGFUIE" \
++    "UNYQKEAICMFOYYLDRJQXCKQUILBITRHCUSQMCNSDDCLMYRKNXWFYRPHKDPWHACQGQFLCDTXXZKYDGDDPOBSWEMPAAVFCEXQJDCBOZIRSOWELVYEK" \
++    "WNGRMNGMOPFVVLVIOYDJJMWJGMZCMNGRPMLMNJLPZKFRVYSTRPQOPBKREYFDCIQJLQANHNOIUMHAJAEHAVGSMDSJRNGVPTRTFHWNXPZDOOLHYYMG" \
++    "ALWNVZYKHPGFEZNGDGFUIEUNYQKEAICMFOYYLDRJQXCKQUILBITRHCUSQMCNSDDCLMYRQUKNXWFYRPHKDPWHACQGQFLCDTXXZKYDGDDPOBSWEMPA" \
++    "AVFCEXQJDCBOZIRSOWELVYEKWNGRMNGMOPFVVLVIOYDJJMWJGMZCMNGRPMLMNJLPZKFRVYSTRPQOPBKREYFDCIQJLQANHNOIUMHAJAEHAVGSMDSJ" \
++    "RNGVPTRTFHWNXPZDOOLHYYMGALWNVZYKHPGFEZNGDGFUIEUNYQKEAICMFOYYLDRJQXCKQUILBITRHCUSQMCNSDDCLMYRQIAUKNXWFYRPHKDPWHAC" \
++    "QGQFLCDTXXZKYDGDDPOBSWEMPAAVFCEXQJDCBOZIRSOWELVYEKWNGRMNGMOPFVVLVIOYDJJMWJGMZCMNGRPMLMNJLPZKFRVYSTRPQOPBKREYFDCI" \
++    "QJLQANHNOIUMHAJAEHAVGSMDSJRNGVPTRTFHWNXPZDOOLHYYMGALWNVZYKHPGFEZNGDGFUIEUNYQKEAICMFOYYLDRJQXCKQUILBITRHCUSQMCNSD" \
++    "DCLMYRQIADAUKNXWFYRPHKDPWHACQGQFLCDTXXZKYDGDDPOBSWEMPAAVFCEXQJDCBOZIRSOWELVYEKWNGRMNGMOPFVVLVIOYDJJMWJGMZCMNGRPM" \
++    "LMNJLPZKFRVYSTRPQOPBKREYFDCIQJLQANHNOIUMHAJAEHAVGSMDSJRNGVPTRTFHWNXPZDOOLHYYMGALWNVZYKHPGFEZNGDGFUIEUNYQKEAICMFO" \
++    "YYLDRJQXCKQUILBITRHCUSQMCNSDDCLMYRQIIDAUKNXWFYRPHKDPWHACQGQFLCDTXXZKYDGDDPOBSWEMPAAVFCEXQJDCBOZIRSOWELVYEKWNGRMN" \
++    "GMOPFVVLVIOYDJJMWJGMZCMNGRPMLMNJLPZKFRVYSTRPQOPBKREYFDCIQJLQANHNOIUMHAJAEHAVGSMDSJRNGVPTRTFHWNXPZDOOLHYYMGALWNVZ" \
++    "YKHPGFEZNGDGFUIEUNYQKEAICMFOYYLDRJQXCKQUILBITRHCUSQMCNSDDCLMYRQIAOM";
++
++static const char fixed_file_data[] = "AAABAACAADAAEAAFAAGAAHAAIAAJAAKAALAAMAANAAOAAPAAQAARAASAATAAUAAVAAWAAXAAYAAZAB" \
++    "BABCABDABEABFABGABHABIABJABKABLABMABNABOABPABQABRABSABTABUABVABWABXABYABZACBACCACDACEACFACGACHACIACJACKACLACMACN" \
++    "ACOACPACQACRACSACTACUACVACWACXACYACZADBADCADDADEADFADGADHADIADJADKADLADMADNADOADPADQADRADSADTADUADVADWADXADYADZA" \
++    "EBAECAEDAEEAEFAEGAEHAEIAEJAEKAELAEMAENAEOAEPAEQAERAESAETAEUAEVAEWAEXAEYAEZAFBAFCAFDAFEAFFAFGAFHAFIAFJAFKAFLAFMAF" \
++    "NAFOAFPAFQAFRAFSAFTAFUAFVAFWAFXAFYAFZAGBAGCAGDAGEAGFAGGAGHAGIAGJAGKAGLAGMAGNAGOAGPAGQAGRAGSAGTAGUAGVAGWAGXAGYAGZ" \
++    "AHBAHCAHDAHEAHFAHGAHHAHIAHJAHKAHLAHMAHNAHOAHPAHQAHRAHSAHTAHUAHVAHWAHXAHYAHZAIBAICAIDAIEAIFAIGAIHAIIAIJAIKAILAIMA" \
++    "INAIOAIPAIQAIRAISAITAIUAIVAIWAIXAIYAIZAJBAJCAJDAJEAJFAJGAJHAJIAJJAJKAJLAJMAJNAJOAJPAJQAJRAJSAJTAJUAJVAJWAJXAJYAJ" \
++    "ZAKBAKCAKDAKEAKFAKGAKHAKIAKJAKKAKLAKMAKNAKOAKPAKQAKRAKSAKTAKUAKVAKWAKXAKYAKZALBALCALDALEALFALGALHALIALJALKALLALM" \
++    "ALNALOALPALQALRALSALTALUALVALWALXALYALZAMBAMCAMDAMEAMFAMGAMHAMIAMJAMKAMLAMMAMNAMOAMPAMQAMRAMSAMTAMUAMVAMWAMXAMYA" \
++    "MZANBANCANDANEANFANGANHANIANJANKANLANMANNANOANPANQANRANSANTANUANVANWANXANYANZAOBAOCAODAOEAOFAOGAOHAOIAOJAOKAOLAO" \
++    "MAONAOOAOPAOQAORAOSAOTAOUAOVAOWAOXAOYAOZAPBAPCAPDAPEAPFAPGAPHAPIAPJAPKAPLAPMAPNAPOAPPAPQAPRAPSAPTAPUAPVAPWAPXAPY" \
++    "APZAQBAQCAQDAQEAQFAQGAQHAQIAQJAQKAQLAQMAQNAQOAQPAQQAQRAQSAQTAQUAQVAQWAQXAQYAQZARBARCARDAREARFARGARHARIARJARKARLA" \
++    "RMARNAROARPARQARRARSARTARUARVARWARXARYARZASBASCASDASEASFASGASHASIASJASKASLASMASNASOASPASQASRASSASTASUASVASWASXAS" \
++    "YASZATBATCATDATEATFATGATHATIATJATKATLATMATNATOATPATQATRATSATTATUATVATWATXATYATZAUBAUCAUDAUEAUFAUGAUHAUIAUJAUKAUL" \
++    "AUMAUNAUOAUPAUQAURAUSAUTAUUAUVAUWAUXAUYAUZAVBAVCAVDAVEAVFAVGAVHAVIAVJAVKAVLAVMAVNAVOAVPAVQAVRAVSAVTAVUAVVAVWAVXA" \
++    "VYAVZAWBAWCAWDAWEAWFAWGAWHAWIAWJAWKAWLAWMAWNAWOAWPAWQAWRAWSAWTAWUAWVAWWAWXAWYAWZAXBAXCAXDAXEAXFAXGAXHAXIAXJAXKAX" \
++    "LAXMAXNAXOAXPAXQAXRAXSAXTAXUAXVAXWAXXAXYAXZAYBAYCAYDAYEAYFAYGAYHAYIAYJAYKAYLAYMAYNAYOAYPAYQAYRAYSAYTAYUAYVAYWAYX" \
++    "AYYAYZAZBAZCAZDAZEAZFAZGAZHAZIAZJAZKAZLAZMAZNAZOAZPAZQAZRAZSAZTAZUAZVAZWAZXAZYAZZBBBCBBDBBEBBFBBGBBHBBIBBJBBKBBL" \
++    "BBMBBNBBOBBPBBQBBRBBSBBTBBUBBVBBWBBXBBYBBZBCCBCDBCEBCFBCGBCHBCIBCJBCKBCLBCMBCNBCOBCPBCQBCRBCSBCTBCUBCVBCWBCXBCYB" \
++    "CZBDCBDDBDEBDFBDGBDHBDIBDJBDKBDLBDMBDNBDOBDPBDQBDRBDSBDTBDUBDVBDWBDXBDYBDZBECBEDBEEBEFBEGBEHBEIBEJBEKBELBEMBENBE" \
++    "OBEPBEQBERBESBETBEUBEVBEWBEXBEYBEZBFCBFDBFEBFFBFGBFHBFIBFJBFKBFLBFMBFNBFOBFPBFQBFRBFSBFTBFUBFVBFWBFXBFYBFZBGCBGD" \
++    "BGEBGFBGGBGHBGIBGJBGKBGLBGMBGNBGOBGPBGQBGRBGSBGTBGUBGVBGWBGXBGYBGZBHCBHDBHEBHFBHGBHHBHIBHJBHKBHLBHMBHNBHOBHPBHQB" \
++    "HRBHSBHTBHUBHVBHWBHXBHYBHZBICBIDBIEBIFBIGBIHBIIBIJBIKBILBIMBINBIOBIPBIQBIRBISBITBIUBIVBIWBIXBIYBIZBJCBJDBJEBJFBJ" \
++    "GBJHBJIBJJBJKBJLBJMBJNBJOBJPBJQBJRBJSBJTBJUBJVBJWBJXBJYBJZBKCBKDBKEBKFBKGBKHBKIBKJBKKBKLBKMBKNBKOBKPBKQBKRBKSBKT" \
++    "BKUBKVBKWBKXBKYBKZBLCBLDBLEBLFBLGBLHBLIBLJBLKBLLBLMBLNBLOBLPBLQBLRBLSBLTBLUBLVBLWBLXBLYBLZBMCBMDBMEBMFBMGBMHBMIB" \
++    "MJBMKBMLBMMBMNBMOBMPBMQBMRBMSBMTBMUBMVBMWBMXBMYBMZBNCBNDBNEBNFBNGBNHBNIBNJBNKBNLBNMBNNBNOBNPBNQBNRBNSBNTBNUBNVBN" \
++    "WBNXBNYBNZBOCBODBOEBOFBOGBOHBOIBOJBOKBOLBOMBONBOOBOPBOQBORBOSBOTBOUBOVBOWBOXBOYBOZBPCBPDBPEBPFBPGBPHBPIBPJBPKBPL" \
++    "BPMBPNBPOBPPBPQBPRBPSBPTBPUBPVBPWBPXBPYBPZBQCBQDBQEBQFBQGBQHBQIBQJBQKBQLBQMBQNBQOBQPBQQBQRBQSBQTBQUBQVBQWBQXBQYB" \
++    "QZBRCBRDBREBRFBRGBRHBRIBRJBRKBRLBRMBRNBROBRPBRQBRRBRSBRTBRUBRVBRWBRXBRYBRZBSCBSDBSEBSFBSGBSHBSIBSJBSKBSLBSMBSNBS" \
++    "OBSPBSQBSRBSSBSTBSUBSVBSWBSXBSYBSZBTCBTDBTEBTFBTGBTHBTIBTJBTKBTLBTMBTNBTOBTPBTQBTRBTSBTTBTUBTVBTWBTXBTYBTZBUCBUD" \
++    "BUEBUFBUGBUHBUIBUJBUKBULBUMBUNBUOBUPBUQBURBUSBUTBUUBUVBUWBUXBUYBUZBVCBVDBVEBVFBVGBVHBVIBVJBVKBVLBVMBVNBVOBVPBVQB" \
++    "VRBVSBVTBVUBVVBVWBVXBVYBVZBWCBWDBWEBWFBWGBWHBWIBWJBWKBWLBWMBWNBWOBWPBWQBWRBWSBWTBWUBWVBWWBWXBWYBWZBXCBXDBXEBXFBX" \
++    "GBXHBXIBXJBXKBXLBXMBXNBXOBXPBXQBXRBXSBXTBXUBXVBXWBXXBXYBXZBYCBYDBYEBYFBYGBYHBYIBYJBYKBYLBYMBYNBYOBYPBYQBYRBYSBYT" \
++    "BYUBYVBYWBYXBYYBYZBZCBZDBZEBZFBZGBZHBZIBZJBZKBZLBZMBZNBZOBZPBZQBZRBZSBZTBZUBZVBZWBZXBZYBZZCCCDCCECCFCCGCCHCCICCJ" \
++    "CCKCCLCCMCCNCCOCCPCCQCCRCCSCCTCCUCCVCCWCCXCCYCCZCDDCDECDFCDGCDHCDICDJCDKCDLCDMCDNCDOCDPCDQCDRCDSCDTCDUCDVCDWCDXC" \
++    "DYCDZCEDCEECEFCEGCEHCEICEJCEKCELCEMCENCEOCEPCEQCERCESCETCEUCEVCEWCEXCEYCEZCFDCFECFFCFGCFHCFICFJCFKCFLCFMCFNCFOCF" \
++    "PCFQCFRCFSCFTCFUCFVCFWCFXCFYCFZCGDCGECGFCGGCGHCGICGJCGKCGLCGMCGNCGOCGPCGQCGRCGSCGTCGUCGVCGWCGXCGYCGZCHDCHECHFCHG" \
++    "CHHCHICHJCHKCHLCHMCHNCHOCHPCHQCHRCHSCHTCHUCHVCHWCHXCHYCHZCIDCIECIFCIGCIHCIICIJCIKCILCIMCINCIOCIPCIQCIRCISCITCIUC" \
++    "IVCIWCIXCIYCIZCJDCJECJFCJGCJHCJICJJCJKCJLCJMCJNCJOCJPCJQCJRCJSCJTCJUCJVCJWCJXCJYCJZCKDCKECKFCKGCKHCKICKJCKKCKLCK" \
++    "MCKNCKOCKPCKQCKRCKSCKTCKUCKVCKWCKXCKYCKZCLDCLECLFCLGCLHCLICLJCLKCLLCLMCLNCLOCLPCLQCLRCLSCLTCLUCLVCLWCLXCLYCLZCMD" \
++    "CMECMFCMGCMHCMICMJCMKCMLCMMCMNCMOCMPCMQCMRCMSCMTCMUCMVCMWCMXCMYCMZCNDCNECNFCNGCNHCNICNJCNKCNLCNMCNNCNOCNPCNQCNRC" \
++    "NSCNTCNUCNVCNWCNXCNYCNZCODCOECOFCOGCOHCOICOJCOKCOLCOMCONCOOCOPCOQCORCOSCOTCOUCOVCOWCOXCOYCOZCPDCPECPFCPGCPHCPICP" \
++    "JCPKCPLCPMCPNCPOCPPCPQCPRCPSCPTCPUCPVCPWCPXCPYCPZCQDCQECQFCQGCQHCQICQJCQKCQLCQMCQNCQOCQPCQQCQRCQSCQTCQUCQVCQWCQX" \
++    "CQYCQZCRDCRECRFCRGCRHCRICRJCRKCRLCRMCRNCROCRPCRQCRRCRSCRTCRUCRVCRWCRXCRYCRZCSDCSECSFCSGCSHCSICSJCSKCSLCSMCSNCSOC" \
++    "SPCSQCSRCSSCSTCSUCSVCSWCSXCSYCSZCTDCTECTFCTGCTHCTICTJCTKCTLCTMCTNCTOCTPCTQCTRCTSCTTCTUCTVCTWCTXCTYCTZCUDCUECUFCU" \
++    "GCUHCUICUJCUKCULCUMCUNCUOCUPCUQCURCUSCUTCUUCUVCUWCUXCUYCUZCVDCVECVFCVGCVHCVICVJCVKCVLCVMCVNCVOCVPCVQCVRCVSCVTCVU" \
++    "CVVCVWCVXCVYCVZCWDCWECWFCWGCWHCWICWJCWKCWLCWMCWNCWOCWPCWQCWRCWSCWTCWUCWVCWWCWXCWYCWZCXDCXECXFCXGCXHCXICXJCXKCXLC" \
++    "XMCXNCXOCXPCXQCXRCXSCXTCXUCXVCXWCXXCXYCXZCYDCYECYFCYGCYHCYICYJCYKCYLCYMCYNCYOCYPCYQCYRCYSCYTCYUCYVCYWCYXCYYCYZCZ" \
++    "DCZECZFCZGCZHCZICZJCZKCZLCZMCZNCZOCZPCZQCZRCZSCZTCZUCZVCZWCZXCZYCZZDDDEDDFDDGDDHDDIDDJDDKDDLDDMDDNDDODDPDDQDDRDD" \
++    "SDDTDDUDDVDDWDDXDDYDDZDEEDEFDEGDEHDEIDEJDEKDELDEMDENDEODEPDEQDERDESDETDEUDEVDEWDEXDEYDEZDFEDFFDFGDFHDFIDFJDFKDFL" \
++    "DFMDFNDFODFPDFQDFRDFSDFTDFUDFVDFWDFXDFYDFZDGEDGFDGGDGHDGIDGJDGKDGLDGMDGNDGODGPDGQDGRDGSDGTDGUDGVDGWDGXDGYDGZDHED" \
++    "HFDHGDHHDHIDHJDHKDHLDHMDHNDHODHPDHQDHRDHSDHTDHUDHVDHWDHXDHYDHZDIEDIFDIGDIHDIIDIJDIKDILDIMDINDIODIPDIQDIRDISDITDI" \
++    "UDIVDIWDIXDIYDIZDJEDJFDJGDJHDJIDJJDJKDJLDJMDJNDJODJPDJQDJRDJSDJTDJUDJVDJWDJXDJYDJZDKEDKFDKGDKHDKIDKJDKKDKLDKMDKN" \
++    "DKODKPDKQDKRDKSDKTDKUDKVDKWDKXDKYDKZDLEDLFDLGDLHDLIDLJDLKDLLDLMDLNDLODLPDLQDLRDLSDLTDLUDLVDLWDLXDLYDLZDMEDMFDMGD" \
++    "MHDMIDMJDMKDMLDMMDMNDMODMPDMQDMRDMSDMTDMUDMVDMWDMXDMYDMZDNEDNFDNGDNHDNIDNJDNKDNLDNMDNNDNODNPDNQDNRDNSDNTDNUDNVDN" \
++    "WDNXDNYDNZDOEDOFDOGDOHDOIDOJDOKDOLDOMDONDOODOPDOQDORDOSDOTDOUDOVDOWDOXDOYDOZDPEDPFDPGDPHDPIDPJDPKDPLDPMDPNDPODPP" \
++    "DPQDPRDPSDPTDPUDPVDPWDPXDPYDPZDQEDQFDQGDQHDQIDQJDQKDQLDQMDQNDQODQPDQQDQRDQSDQTDQUDQVDQWDQXDQYDQZDREDRFDRGDRHDRID" \
++    "RJDRKDRLDRMDRNDRODRPDRQDRRDRSDRTDRUDRVDRWDRXDRYDRZDSEDSFDSGDSHDSIDSJDSKDSLDSMDSNDSODSPDSQDSRDSSDSTDSUDSVDSWDSXDS" \
++    "YDSZDTEDTFDTGDTHDTIDTJDTKDTLDTMDTNDTODTPDTQDTRDTSDTTDTUDTVDTWDTXDTYDTZDUEDUFDUGDUHDUIDUJDUKDULDUMDUNDUODUPDUQDUR" \
++    "DUSDUTDUUDUVDUWDUXDUYDUZDVEDVFDVGDVHDVIDVJDVKDVLDVMDVNDVODVPDVQDVRDVSDVTDVUDVVDVWDVXDVYDVZDWEDWFDWGDWHDWIDWJDWKD" \
++    "WLDWMDWNDWODWPDWQDWRDWSDWTDWUDWVDWWDWXDWYDWZDXEDXFDXGDXHDXIDXJDXKDXLDXMDXNDXODXPDXQDXRDXSDXTDXUDXVDXWDXXDXYDXZDY" \
++    "EDYFDYGDYHDYIDYJDYKDYLDYMDYNDYODYPDYQDYRDYSDYTDYUDYVDYWDYXDYYDYZDZEDZFDZGDZHDZIDZJDZKDZLDZMDZNDZODZPDZQDZRDZSDZT" \
++    "DZUDZVDZWDZXDZYDZZEEEFEEGEEHEEIEEJEEKEELEEMEENEEOEEPEEQEEREESEETEEUEEVEEWEEXEEYEEZEFFEFGEFHEFIEFJEFKEFLEFMEFNEFO" \
++    "EFPEFQEFREFSEFTEFUEFVEFWEFXEFYEFZEGFEGGEGHEGIEGJEGKEGLEGMEGNEGOEGPEGQEGREGSEGTEGUEGVEGWEGXEGYEGZEHFEHGEHHEHIEHJE" \
++    "HKEHLEHMEHNEHOEHPEHQEHREHSEHTEHUEHVEHWEHXEHYEHZEIFEIGEIHEIIEIJEIKEILEIMEINEIOEIPEIQEIREISEITEIUEIVEIWEIXEIYEIZEJ" \
++    "FEJGEJHEJIEJJEJKEJLEJMEJNEJOEJPEJQEJREJSEJTEJUEJVEJWEJXEJYEJZEKFEKGEKHEKIEKJEKKEKLEKMEKNEKOEKPEKQEKREKSEKTEKUEKV" \
++    "EKWEKXEKYEKZELFELGELHELIELJELKELLELMELNELOELPELQELRELSELTELUELVELWELXELYELZEMFEMGEMHEMIEMJEMKEMLEMMEMNEMOEMPEMQE" \
++    "MREMSEMTEMUEMVEMWEMXEMYEMZENFENGENHENIENJENKENLENMENNENOENPENQENRENSENTENUENVENWENXENYENZEOFEOGEOHEOIEOJEOKEOLEO" \
++    "MEONEOOEOPEOQEOREOSEOTEOUEOVEOWEOXEOYEOZEPFEPGEPHEPIEPJEPKEPLEPMEPNEPOEPPEPQEPREPSEPTEPUEPVEPWEPXEPYEPZEQFEQGEQH" \
++    "EQIEQJEQKEQLEQMEQNEQOEQPEQQEQREQSEQTEQUEQVEQWEQXEQYEQZERFERGERHERIERJERKERLERMERNEROERPERQERRERSERTERUERVERWERXE" \
++    "RYERZESFESGESHESIESJESKESLESMESNESOESPESQESRESSESTESUESVESWESXESYESZETFETGETHETIETJETKETLETMETNETOETPETQETRETSET" \
++    "TETUETVETWETXETYETZEUFEUGEUHEUIEUJEUKEULEUMEUNEUOEUPEUQEUREUSEUTEUUEUVEUWEUXEUYEUZEVFEVGEVHEVIEVJEVKEVLEVMEVNEVO" \
++    "EVPEVQEVREVSEVTEVUEVVEVWEVXEVYEVZEWFEWGEWHEWIEWJEWKEWLEWMEWNEWOEWPEWQEWREWSEWTEWUEWVEWWEWXEWYEWZEXFEXGEXHEXIEXJE" \
++    "XKEXLEXMEXNEXOEXPEXQEXREXSEXTEXUEXVEXWEXXEXYEXZEYFEYGEYHEYIEYJEYKEYLEYMEYNEYOEYPEYQEYREYSEYTEYUEYVEYWEYXEYYEYZEZ" \
++    "FEZGEZHEZIEZJEZKEZLEZMEZNEZOEZPEZQEZREZSEZTEZUEZVEZWEZXEZYEZZFFFGFFHFFIFFJFFKFFLFFMFFNFFOFFPFFQFFRFFSFFTFFUFFVFF" \
++    "WFFXFFYFFZFGGFGHFGIFGJFGKFGLFGMFGNFGOFGPFGQFGRFGSFGTFGUFGVFGWFGXFGYFGZFHGFHHFHIFHJFHKFHLFHMFHNFHOFHPFHQFHRFHSFHT" \
++    "FHUFHVFHWFHXFHYFHZFIGFIHFIIFIJFIKFILFIMFINFIOFIPFIQFIRFISFITFIUFIVFIWFIXFIYFIZFJGFJHFJIFJJFJKFJLFJMFJNFJOFJPFJQF" \
++    "JRFJSFJTFJUFJVFJWFJXFJYFJZFKGFKHFKIFKJFKKFKLFKMFKNFKOFKPFKQFKRFKSFKTFKUFKVFKWFKXFKYFKZFLGFLHFLIFLJFLKFLLFLMFLNFL" \
++    "OFLPFLQFLRFLSFLTFLUFLVFLWFLXFLYFLZFMGFMHFMIFMJFMKFMLFMMFMNFMOFMPFMQFMRFMSFMTFMUFMVFMWFMXFMYFMZFNGFNHFNIFNJFNKFNL" \
++    "FNMFNNFNOFNPFNQFNRFNSFNTFNUFNVFNWFNXFNYFNZFOGFOHFOIFOJFOKFOLFOMFONFOOFOPFOQFORFOSFOTFOUFOVFOWFOXFOYFOZFPGFPHFPIF" \
++    "PJFPKFPLFPMFPNFPOFPPFPQFPRFPSFPTFPUFPVFPWFPXFPYFPZFQGFQHFQIFQJFQKFQLFQMFQNFQOFQPFQQFQRFQSFQTFQUFQVFQWFQXFQYFQZFR" \
++    "GFRHFRIFRJFRKFRLFRMFRNFROFRPFRQFRRFRSFRTFRUFRVFRWFRXFRYFRZFSGFSHFSIFSJFSKFSLFSMFSNFSOFSPFSQFSRFSSFSTFSUFSVFSWFSX" \
++    "FSYFSZFTGFTHFTIFTJFTKFTLFTMFTNFTOFTPFTQFTRFTSFTTFTUFTVFTWFTXFTYFTZFUGFUHFUIFUJFUKFULFUMFUNFUOFUPFUQFURFUSFUTFUUF" \
++    "UVFUWFUXFUYFUZFVGFVHFVIFVJFVKFVLFVMFVNFVOFVPFVQFVRFVSFVTFVUFVVFVWFVXFVYFVZFWGFWHFWIFWJFWKFWLFWMFWNFWOFWPFWQFWRFW" \
++    "SFWTFWUFWVFWWFWXFWYFWZFXGFXHFXIFXJFXKFXLFXMFXNFXOFXPFXQFXRFXSFXTFXUFXVFXWFXXFXYFXZFYGFYHFYIFYJFYKFYLFYMFYNFYOFYP" \
++    "FYQFYRFYSFYTFYUFYVFYWFYXFYYFYZFZGFZHFZIFZJFZKFZLFZMFZNFZOFZPFZQFZRFZSFZTFZUFZVFZWFZXFZYFZZGGGHGGIGGJGGKGGLGGMGGN" \
++    "GGOGGPGGQGGRGGSGGTGGUGGVGGWGGXGGYGGZGHHGHIGHJGHKGHLGHMGHNGHOGHPGHQGHRGHSGHTGHUGHVGHWGHXGHYGHZGIHGIIGIJGIKGILGIMG" \
++    "INGIOGIPGIQGIRGISGITGIUGIVGIWGIXGIYGIZGJHGJIGJJGJKGJLGJMGJNGJOGJPGJQGJRGJSGJTGJUGJVGJWGJXGJYGJZGKHGKIGKJGKKGKLGK" \
++    "MGKNGKOGKPGKQGKRGKSGKTGKUGKVGKWGKXGKYGKZGLHGLIGLJGLKGLLGLMGLNGLOGLPGLQGLRGLSGLTGLUGLVGLWGLXGLYGLZGMHGMIGMJGMKGML" \
++    "GMMGMNGMOGMPGMQGMRGMSGMTGMUGMVGMWGMXGMYGMZGNHGNIGNJGNKGNLGNMGNNGNOGNPGNQGNRGNSGNTGNUGNVGNWGNXGNYGNZGOHGOIGOJGOKG" \
++    "OLGOMGONGOOGOPGOQGORGOSGOTGOUGOVGOWGOXGOYGOZGPHGPIGPJGPKGPLGPMGPNGPOGPPGPQGPRGPSGPTGPUGPVGPWGPXGPYGPZGQHGQIGQJGQ" \
++    "KGQLGQMGQNGQOGQPGQQGQRGQSGQTGQUGQVGQWGQXGQYGQZGRHGRIGRJGRKGRLGRMGRNGROGRPGRQGRRGRSGRTGRUGRVGRWGRXGRYGRZGSHGSIGSJ" \
++    "GSKGSLGSMGSNGSOGSPGSQGSRGSSGSTGSUGSVGSWGSXGSYGSZGTHGTIGTJGTKGTLGTMGTNGTOGTPGTQGTRGTSGTTGTUGTVGTWGTXGTYGTZGUHGUIG" \
++    "UJGUKGULGUMGUNGUOGUPGUQGURGUSGUTGUUGUVGUWGUXGUYGUZGVHGVIGVJGVKGVLGVMGVNGVOGVPGVQGVRGVSGVTGVUGVVGVWGVXGVYGVZGWHGW" \
++    "IGWJGWKGWLGWMGWNGWOGWPGWQGWRGWSGWTGWUGWVGWWGWXGWYGWZGXHGXIGXJGXKGXLGXMGXNGXOGXPGXQGXRGXSGXTGXUGXVGXWGXXGXYGXZGYH" \
++    "GYIGYJGYKGYLGYMGYNGYOGYPGYQGYRGYSGYTGYUGYVGYWGYXGYYGYZGZHGZIGZJGZKGZLGZMGZNGZOGZPGZQGZRGZSGZTGZUGZVGZWGZXGZYGZZH" \
++    "HHIHHJHHKHHLHHMHHNHHOHHPHHQHHRHHSHHTHHUHHVHHWHHXHHYHHZHIIHIJHIKHILHIMHINHIOHIPHIQHIRHISHITHIUHIVHIWHIXHIYHIZHJIH" \
++    "JJHJKHJLHJMHJNHJOHJPHJQHJRHJSHJTHJUHJVHJWHJXHJYHJZHKIHKJHKKHKLHKMHKNHKOHKPHKQHKRHKSHKTHKUHKVHKWHKXHKYHKZHLIHLJHL" \
++    "KHLLHLMHLNHLOHLPHLQHLRHLSHLTHLUHLVHLWHLXHLYHLZHMIHMJHMKHMLHMMHMNHMOHMPHMQHMRHMSHMTHMUHMVHMWHMXHMYHMZHNIHNJHNKHNL" \
++    "HNMHNNHNOHNPHNQHNRHNSHNTHNUHNVHNWHNXHNYHNZHOIHOJHOKHOLHOMHONHOOHOPHOQHORHOSHOTHOUHOVHOWHOXHOYHOZHPIHPJHPKHPLHPMH" \
++    "PNHPOHPPHPQHPRHPSHPTHPUHPVHPWHPXHPYHPZHQIHQJHQKHQLHQMHQNHQOHQPHQQHQRHQSHQTHQUHQVHQWHQXHQYHQZHRIHRJHRKHRLHRMHRNHR" \
++    "OHRPHRQHRRHRSHRTHRUHRVHRWHRXHRYHRZHSIHSJHSKHSLHSMHSNHSOHSPHSQHSRHSSHSTHSUHSVHSWHSXHSYHSZHTIHTJHTKHTLHTMHTNHTOHTP" \
++    "HTQHTRHTSHTTHTUHTVHTWHTXHTYHTZHUIHUJHUKHULHUMHUNHUOHUPHUQHURHUSHUTHUUHUVHUWHUXHUYHUZHVIHVJHVKHVLHVMHVNHVOHVPHVQH" \
++    "VRHVSHVTHVUHVVHVWHVXHVYHVZHWIHWJHWKHWLHWMHWNHWOHWPHWQHWRHWSHWTHWUHWVHWWHWXHWYHWZHXIHXJHXKHXLHXMHXNHXOHXPHXQHXRHX" \
++    "SHXTHXUHXVHXWHXXHXYHXZHYIHYJHYKHYLHYMHYNHYOHYPHYQHYRHYSHYTHYUHYVHYWHYXHYYHYZHZIHZJHZKHZLHZMHZNHZOHZPHZQHZRHZSHZT" \
++    "HZUHZVHZWHZXHZYHZZIIIJIIKIILIIMIINIIOIIPIIQIIRIISIITIIUIIVIIWIIXIIYIIZIJJIJKIJLIJMIJNIJOIJPIJQIJRIJSIJTIJUIJVIJW" \
++    "IJXIJYIJZIKJIKKIKLIKMIKNIKOIKPIKQIKRIKSIKTIKUIKVIKWIKXIKYIKZILJILKILLILMILNILOILPILQILRILSILTILUILVILWILXILYILZI" \
++    "MJIMKIMLIMMIMNIMOIMPIMQIMRIMSIMTIMUIMVIMWIMXIMYIMZINJINKINLINMINNINOINPINQINRINSINTINUINVINWINXINYINZIOJIOKIOLIO" \
++    "MIONIOOIOPIOQIORIOSIOTIOUIOVIOWIOXIOYIOZIPJIPKIPLIPMIPNIPOIPPIPQIPRIPSIPTIPUIPVIPWIPXIPYIPZIQJIQKIQLIQMIQNIQOIQP" \
++    "IQQIQRIQSIQTIQUIQVIQWIQXIQYIQZIRJIRKIRLIRMIRNIROIRPIRQIRRIRSIRTIRUIRVIRWIRXIRYIRZISJISKISLISMISNISOISPISQISRISSI" \
++    "STISUISVISWISXISYISZITJITKITLITMITNITOITPITQITRITSITTITUITVITWITXITYITZIUJIUKIULIUMIUNIUOIUPIUQIURIUSIUTIUUIUVIU" \
++    "WIUXIUYIUZIVJIVKIVLIVMIVNIVOIVPIVQIVRIVSIVTIVUIVVIVWIVXIVYIVZIWJIWKIWLIWMIWNIWOIWPIWQIWRIWSIWTIWUIWVIWWIWXIWYIWZ" \
++    "IXJIXKIXLIXMIXNIXOIXPIXQIXRIXSIXTIXUIXVIXWIXXIXYIXZIYJIYKIYLIYMIYNIYOIYPIYQIYRIYSIYTIYUIYVIYWIYXIYYIYZIZJIZKIZLI" \
++    "ZMIZNIZOIZPIZQIZRIZSIZTIZUIZVIZWIZXIZYIZZJJJKJJLJJMJJNJJOJJPJJQJJRJJSJJTJJUJJVJJWJJXJJYJJZJKKJKLJKMJKNJKOJKPJKQJ" \
++    "KRJKSJKTJKUJKVJKWJKXJKYJKZJLKJLLJLMJLNJLOJLPJLQJLRJLSJLTJLUJLVJLWJLXJLYJLZJMKJMLJMMJMNJMOJMPJMQJMRJMSJMTJMUJMVJM" \
++    "WJMXJMYJMZJNKJNLJNMJNNJNOJNPJNQJNRJNSJNTJNUJNVJNWJNXJNYJNZJOKJOLJOMJONJOOJOPJOQJORJOSJOTJOUJOVJOWJOXJOYJOZJPKJPL" \
++    "JPMJPNJPOJPPJPQJPRJPSJPTJPUJPVJPWJPXJPYJPZJQKJQLJQMJQNJQOJQPJQQJQRJQSJQTJQUJQVJQWJQXJQYJQZJRKJRLJRMJRNJROJRPJRQJ" \
++    "RRJRSJRTJRUJRVJRWJRXJRYJRZJSKJSLJSMJSNJSOJSPJSQJSRJSSJSTJSUJSVJSWJSXJSYJSZJTKJTLJTMJTNJTOJTPJTQJTRJTSJTTJTUJTVJT" \
++    "WJTXJTYJTZJUKJULJUMJUNJUOJUPJUQJURJUSJUTJUUJUVJUWJUXJUYJUZJVKJVLJVMJVNJVOJVPJVQJVRJVSJVTJVUJVVJVWJVXJVYJVZJWKJWL" \
++    "JWMJWNJWOJWPJWQJWRJWSJWTJWUJWVJWWJWXJWYJWZJXKJXLJXMJXNJXOJXPJXQJXRJXSJXTJXUJXVJXWJXXJXYJXZJYKJYLJYMJYNJYOJYPJYQJ" \
++    "YRJYSJYTJYUJYVJYWJYXJYYJYZJZKJZLJZMJZNJZOJZPJZQJZRJZSJZTJZUJZVJZWJZXJZYJZZKKKLKKMKKNKKOKKPKKQKKRKKSKKTKKUKKVKKWK" \
++    "KXKKYKKZKLLKLMKLNKLOKLPKLQKLRKLSKLTKLUKLVKLWKLXKLYKLZKMLKMMKMNKMOKMPKMQKMRKMSKMTKMUKMVKMWKMXKMYKMZKNLKNMKNNKNOKN" \
++    "PKNQKNRKNSKNTKNUKNVKNWKNXKNYKNZKOLKOMKONKOOKOPKOQKORKOSKOTKOUKOVKOWKOXKOYKOZKPLKPMKPNKPOKPPKPQKPRKPSKPTKPUKPVKPW" \
++    "KPXKPYKPZKQLKQMKQNKQOKQPKQQKQRKQSKQTKQUKQVKQWKQXKQYKQZKRLKRMKRNKROKRPKRQKRRKRSKRTKRUKRVKRWKRXKRYKRZKSLKSMKSNKSOK" \
++    "SPKSQKSRKSSKSTKSUKSVKSWKSXKSYKSZKTLKTMKTNKTOKTPKTQKTRKTSKTTKTUKTVKTWKTXKTYKTZKULKUMKUNKUOKUPKUQKURKUSKUTKUUKUVKU" \
++    "WKUXKUYKUZKVLKVMKVNKVOKVPKVQKVRKVSKVTKVUKVVKVWKVXKVYKVZKWLKWMKWNKWOKWPKWQKWRKWSKWTKWUKWVKWWKWXKWYKWZKXLKXMKXNKXO" \
++    "KXPKXQKXRKXSKXTKXUKXVKXWKXXKXYKXZKYLKYMKYNKYOKYPKYQKYRKYSKYTKYUKYVKYWKYXKYYKYZKZLKZMKZNKZOKZPKZQKZRKZSKZTKZUKZVK" \
++    "ZWKZXKZYKZZLLLMLLNLLOLLPLLQLLRLLSLLTLLULLVLLWLLXLLYLLZLMMLMNLMOLMPLMQLMRLMSLMTLMULMVLMWLMXLMYLMZLNMLNNLNOLNPLNQL" \
++    "NRLNSLNTLNULNVLNWLNXLNYLNZLOMLONLOOLOPLOQLORLOSLOTLOULOVLOWLOXLOYLOZLPMLPNLPOLPPLPQLPRLPSLPTLPULPVLPWLPXLPYLPZLQ" \
++    "MLQNLQOLQPLQQLQRLQSLQTLQULQVLQWLQXLQYLQZLRMLRNLROLRPLRQLRRLRSLRTLRULRVLRWLRXLRYLRZLSMLSNLSOLSPLSQLSRLSSLSTLSULSV" \
++    "LSWLSXLSYLSZLTMLTNLTOLTPLTQLTRLTSLTTLTULTVLTWLTXLTYLTZLUMLUNLUOLUPLUQLURLUSLUTLUULUVLUWLUXLUYLUZLVMLVNLVOLVPLVQL" \
++    "VRLVSLVTLVULVVLVWLVXLVYLVZLWMLWNLWOLWPLWQLWRLWSLWTLWULWVLWWLWXLWYLWZLXMLXNLXOLXPLXQLXRLXSLXTLXULXVLXWLXXLXYLXZLY" \
++    "MLYNLYOLYPLYQLYRLYSLYTLYULYVLYWLYXLYYLYZLZMLZNLZOLZPLZQLZRLZSLZTLZULZVLZWLZXLZYLZZMMMNMMOMMPMMQMMRMMSMMTMMUMMVMM" \
++    "WMMXMMYMMZMNNMNOMNPMNQMNRMNSMNTMNUMNVMNWMNXMNYMNZMONMOOMOPMOQMORMOSMOTMOUMOVMOWMOXMOYMOZMPNMPOMPPMPQMPRMPSMPTMPU" \
++    "MPVMPWMPXMPYMPZMQNMQOMQPMQQMQRMQSMQTMQUMQVMQWMQXMQYMQZMRNMROMRPMRQMRRMRSMRTMRUMRVMRWMRXMRYMRZMSNMSOMSPMSQMSRMSSM" \
++    "STMSUMSVMSWMSXMSYMSZMTNMTOMTPMTQMTRMTSMTTMTUMTVMTWMTXMTYMTZMUNMUOMUPMUQMURMUSMUTMUUMUVMUWMUXMUYMUZMVNMVOMVPMVQMV" \
++    "RMVSMVTMVUMVVMVWMVXMVYMVZMWNMWOMWPMWQMWRMWSMWTMWUMWVMWWMWXMWYMWZMXNMXOMXPMXQMXRMXSMXTMXUMXVMXWMXXMXYMXZMYNMYOMYP" \
++    "MYQMYRMYSMYTMYUMYVMYWMYXMYYMYZMZNMZOMZPMZQMZRMZSMZTMZUMZVMZWMZXMZYMZZNNNONNPNNQNNRNNSNNTNNUNNVNNWNNXNNYNNZNOONOP" \
++    "NOQNORNOSNOTNOUNOVNOWNOXNOYNOZNPONPPNPQNPRNPSNPTNPUNPVNPWNPXNPYNPZNQONQPNQQNQRNQSNQTNQUNQVNQWNQXNQYNQZNRONRPNRQN" \
++    "RRNRSNRTNRUNRVNRWNRXNRYNRZNSONSPNSQNSRNSSNSTNSUNSVNSWNSXNSYNSZNTONTPNTQNTRNTSNTTNTUNTVNTWNTXNTYNTZNUONUPNUQNURNU" \
++    "SNUTNUUNUVNUWNUXNUYNUZNVONVPNVQNVRNVSNVTNVUNVVNVWNVXNVYNVZNWONWPNWQNWRNWSNWTNWUNWVNWWNWXNWYNWZNXONXPNXQNXRNXSNXT" \
++    "NXUNXVNXWNXXNXYNXZNYONYPNYQNYRNYSNYTNYUNYVNYWNYXNYYNYZNZONZPNZQNZRNZSNZTNZUNZVNZWNZXNZYNZZOOOPOOQOOROOSOOTOOUOOV" \
++    "OOWOOXOOYOOZOPPOPQOPROPSOPTOPUOPVOPWOPXOPYOPZOQPOQQOQROQSOQTOQUOQVOQWOQXOQYOQZORPORQORRORSORTORUORVORWORXORYORZO" \
++    "SPOSQOSROSSOSTOSUOSVOSWOSXOSYOSZOTPOTQOTROTSOTTOTUOTVOTWOTXOTYOTZOUPOUQOUROUSOUTOUUOUVOUWOUXOUYOUZOVPOVQOVROVSOV" \
++    "TOVUOVVOVWOVXOVYOVZOWPOWQOWROWSOWTOWUOWVOWWOWXOWYOWZOXPOXQOXROXSOXTOXUOXVOXWOXXOXYOXZOYPOYQOYROYSOYTOYUOYVOYWOYX" \
++    "OYYOYZOZPOZQOZROZSOZTOZUOZVOZWOZXOZYOZZPPPQPPRPPSPPTPPUPPVPPWPPXPPYPPZPQQPQRPQSPQTPQUPQVPQWPQXPQYPQZPRQPRRPRSPRT" \
++    "PRUPRVPRWPRXPRYPRZPSQPSRPSSPSTPSUPSVPSWPSXPSYPSZPTQPTRPTSPTTPTUPTVTABUABVABWABXABYABZACBACCACDACEACFACGACHACIACJ" \
++    "ACKACLACMACNACOACPACQACRACSACTACUACVACWACXACYACZADBADCADDADEADFADGADHADIADJADKADLADMADAAABAACAADAAEAAFAAGAAHAAIA" \
++    "AJAAKAALAAMAANAAOAAPAAQAARAASAATAAUAAVAAWAAXAAYAAZABBABCABDABEABFABGABHABIABJABKABLABMABNABOABPABQABRABSABHAFIAF" \
++    "JAFKAFLAFMAFNAFOAFPAFQAFRAFSAFTAFUAFVAFWAFXAFYAFZAGBAGCAGDAGEAGFAGGAGHAGIAGJAGKAGLAGMAGNAGOAGPAGQAGRAGSAGTAGUAGV" \
++    "AGWAGXAGYAGZAHNADOADPADQADRADSADTADUADVADWADXADYADZAEBAECAEDAEEAEFAEGAEHAEIAEJAEKAELAEMAENAEOAEPAEQAERAESAETAEUA" \
++    "EVAEWAEXAEYAEZAFBAFCAFDAFEAFFAFGAFUAIVAIWAIXAIYAIZAJBAJCAJDAJEAJFAJGAJHAJIAJJAJKAJLAJMAJNAJOAJPAJQAJRAJSAJTAJUAJ" \
++    "VAJWAJXAJYAJZAKBAKCAKDAKEAKFAKGAKHAKIAKJAKKAKLAKMAKNAKBAHCAHDAHEAHFAHGAHHAHIAHJAHKAHLAHMAHNAHOAHPAHQAHRAHSAHTAHU" \
++    "AHVAHWAHXAHYAHZAIBAICAIDAIEAIFAIGAIHAIIAIJAIKAILAIMAINAIOAIPAIQAIRAISAITAIIAMJAMKAMLAMMAMNAMOAMPAMQAMRAMSAMTAMUA" \
++    "MVAMWAMXAMYAMZANBANCANDANEANFANGANHANIANJANKANLANMANNANOANPANQANRANSANTANUANVANWANXANYANZAOBAOOAKPAKQAKRAKSAKTAK" \
++    "UAKVAKWAKXAKYAKZALBALCALDALEALFALGALHALIALJALKALLALMALNALOALPALQALRALSALTALUALVALWALXALYALZAMBAMCAMDAMEAMFAMGAMH" \
++    "AMVAPWAPXAPYAPZAQBAQCAQDAQEAQFAQGAQHAQIAQJAQKAQLAQMAQNAQOAQPAQQAQRAQSAQTAQUAQVAQWAQXAQYAQZARBARCARDAREARFARGARHA" \
++    "RIARJARKARLARMARNAROARCAODAOEAOFAOGAOHAOIAOJAOKAOLAOMAONAOOAOPAOQAORAOSAOTAOUAOVAOWAOXAOYAOZAPBAPCAPDAPEAPFAPGAP" \
++    "HAPIAPJAPKAPLAPMAPNAPOAPPAPQAPRAPSAPTAPUAPJATKATLATMATNATOATPATQATRATSATTATUATVATWATXATYATZAUBAUCAUDAUEAUFAUGAUH" \
++    "AUIAUJAUKAULAUMAUNAUOAUPAUQAURAUSAUTAUUAUVAUWAUXAUYAUZAVBAVCAVPARQARRARSARTARUARVARWARXARYARZASBASCASDASEASFASGA" \
++    "SHASIASJASKASLASMASNASOASPASQASRASSASTASUASVASWASXASYASZATBATCATDATEATFATGATHATIATWAWXAWYAWZAXBAXCAXDAXEAXFAXGAX" \
++    "HAXIAXJAXKAXLAXMAXNAXOAXPAXQAXRAXSAXTAXUAXVAXWAXXAXYAXZAYBAYCAYDAYEAYFAYGAYHAYIAYJAYKAYLAYMAYNAYOAYPAYDAVEAVFAVG" \
++    "AVHAVIAVJAVKAVLAVMAVNAVOAVPAVQAVRAVSAVTAVUAVVAVWAVXAVYAVZAWBAWCAWDAWEAWFAWGAWHAWIAWJAWKAWLAWMAWNAWOAWPAWQAWRAWSA" \
++    "WTAWUAWVAWBLBBMBBNBBOBBPBBQBBRBBSBBTBBUBBVBBWBBXBBYBBZBCCBCDBCEBCFBCGBCHBCIBCJBCKBCLBCMBCNBCOBCPBCQBCRBCSBCTBCUB" \
++    "CVBCWBCXBCYBCZBDCBDDBDEBDFBDGBQAYRAYSAYTAYUAYVAYWAYXAYYAYZAZBAZCAZDAZEAZFAZGAZHAZIAZJAZKAZLAZMAZNAZOAZPAZQAZRAZS" \
++    "AZTAZUAZVAZWAZXAZYAZZBBBCBBDBBEBBFBBGBBHBBIBBJBBKBFDBFEBFFBFGBFHBFIBFJBFKBFLBFMBFNBFOBFPBFQBFRBFSBFTBFUBFVBFWBFX" \
++    "BFYBFZBGCBGDBGEBGFBGGBGHBGIBGJBGKBGLBGMBGNBGOBGPBGQBGRBGSBGTBGUBGVBGWBDHBDIBDJBDKBDLBDMBDNBDOBDPBDQBDRBDSBDTBDUB" \
++    "DVBDWBDXBDYBDZBECBEDBEEBEFBEGBEHBEIBEJBEKBELBEMBENBEOBEPBEQBERBESBETBEUBEVBEWBEXBEYBEZBFCBITBIUBIVBIWBIXBIYBIZBJ" \
++    "CBJDBJEBJFBJGBJHBJIBJJBJKBJLBJMBJNBJOBJPBJQBJRBJSBJTBJUBJVBJWBJXBJYBJZBKCBKDBKEBKFBKGBKHBKIBKJBKKBKLBKMBKNBKOBGX" \
++    "BGYBGZBHCBHDBHEBHFBHGBHHBHIBHJBHKBHLBHMBHNBHOBHPBHQBHRBHSBHTBHUBHVBHWBHXBHYBHZBICBIDBIEBIFBIGBIHBIIBIJBIKBILBIMB" \
++    "INBIOBIPBIQBIRBISBMLBMMBMNBMOBMPBMQBMRBMSBMTBMUBMVBMWBMXBMYBMZBNCBNDBNEBNFBNGBNHBNIBNJBNKBNLBNMBNNBNOBNPBNQBNRBN" \
++    "SBNTBNUBNVBNWBNXBNYBNZBOCBODBOEBOFBOGBKPBKQBKRBKSBKTBKUBKVBKWBKXBKYBKZBLCBLDBLEBLFBLGBLHBLIBLJBLKBLLBLMBLNBLOBLP" \
++    "BLQBLRBLSBLTBLUBLVBLWBLXBLYBLZBMCBMDBMEBMFBMGBMHBMIBMJBMKBQDBQEBQFBQGBQHBQIBQJBQKBQLBQMBQNBQOBQPBQQBQRBQSBQTBQUB" \
++    "QVBQWBQXBQYBQZBRCBRDBREBRFBRGBRHBRIBRJBRKBRLBRMBRNBROBRPBRQBRRBRSBRTBRUBRVBRWBOHBOIBOJBOKBOLBOMBONBOOBOPBOQBORBO" \
++    "SBOTBOUBOVBOWBOXBOYBOZBPCBPDBPEBPFBPGBPHBPIBPJBPKBPLBPMBPNBPOBPPBPQBPRBPSBPTBPUBPVBPWBPXBPYBPZBQCBTTBTUBTVBTWBTX" \
++    "BTYBTZBUCBUDBUEBUFBUGBUHBUIBUJBUKBULBUMBUNBUOBUPBUQBURBUSBUTBUUBUVBUWBUXBUYBUZBVCBVDBVEBVFBVGBVHBVIBVJBVKBVLBVMB" \
++    "VNBVOBRXBRYBRZBSCBSDBSEBSFBSGBSHBSIBSJBSKBSLBSMBSNBSOBSPBSQBSRBSSBSTBSUBSVBSWBSXBSYBSZBTCBTDBTEBTFBTGBTHBTIBTJBT" \
++    "KBTLBTMBTNBTOBTPBTQBTRBTSBXLBXMBXNBXOBXPBXQBXRBXSBXTBXUBXVBXWBXXBXYBXZBYCBYDBYEBYFBYGBYHBYIBYJBYKBYLBYMBYNBYOBYP" \
++    "BYQBYRBYSBYTBYUBYVBYWBYXBYYBYZBZCBZDBZEBZFBZGBVPBVQBVRBVSBVTBVUBVVBVWBVXBVYBVZBWCBWDBWEBWFBWGBWHBWIBWJBWKBWLBWMB" \
++    "WNBWOBWPBWQBWRBWSBWTBWUBWVBWWBWXBWYBWZBXCBXDBXEBXFBXGBXHBXIBXJBXKBCDFCDGCDHCDICDJCDKCDLCDMCDNCDOCDPCDQCDRCDSCDTC" \
++    "DUCDVCDWCDXCDYCDZCEDCEECEFCEGCEHCEICEJCEKCELCEMCENCEOCEPCEQCERCESCETCEUCEVCEWCEXCEYCEZZHBZIBZJBZKBZLBZMBZNBZOBZP" \
++    "BZQBZRBZSBZTBZUBZVBZWBZXBZYBZZCCCDCCECCFCCGCCHCCICCJCCKCCLCCMCCNCCOCCPCCQCCRCCSCCTCCUCCVCCWCCXCCYCCZCDDCDECGYCGZ" \
++    "CHDCHECHFCHGCHHCHICHJCHKCHLCHMCHNCHOCHPCHQCHRCHSCHTCHUCHVCHWCHXCHYCHZCIDCIECIFCIGCIHCIICIJCIKCILCIMCINCIOCIPCIQC" \
++    "IRCISCITCIUCIVCFDCFECFFCFGCFHCFICFJCFKCFLCFMCFNCFOCFPCFQCFRCFSCFTCFUCFVCFWCFXCFYCFZCGDCGECGFCGGCGHCGICGJCGKCGLCG" \
++    "MCGNCGOCGPCGQCGRCGSCGTCGUCGVCGWCGXCKUCKVCKWCKXCKYCKZCLDCLECLFCLGCLHCLICLJCLKCLLCLMCLNCLOCLPCLQCLRCLSCLTCLUCLVCLW" \
++    "CLXCLYCLZCMDCMECMFCMGCMHCMICMJCMKCMLCMMCMNCMOCMPCMQCMRCIWCIXCIYCIZCJDCJECJFCJGCJHCJICJJCJKCJLCJMCJNCJOCJPCJQCJRC" \
++    "JSCJTCJUCJVCJWCJXCJYCJZCKDCKECKFCKGCKHCKICKJCKKCKLCKMCKNCKOCKPCKQCKRCKSCKTCOQCORCOSCOTCOUCOVCOWCOXCOYCOZCPDCPECP" \
++    "FCPGCPHCPICPJCPKCPLCPMCPNCPOCPPCPQCPRCPSCPTCPUCPVCPWCPXCPYCPZCQDCQECQFCQGCQHCQICQJCQKCQLCQMCQNCMSCMTCMUCMVCMWCMX" \
++    "CMYCMZCNDCNECNFCNGCNHCNICNJCNKCNLCNMCNNCNOCNPCNQCNRCNSCNTCNUCNVCNWCNXCNYCNZCODCOECOFCOGCOHCOICOJCOKCOLCOMCONCOOC" \
++    "OPCSMCSNCSOCSPCSQCSRCSSCSTCSUCSVCSWCSXCSYCSZCTDCTECTFCTGCTHCTICTJCTKCTLCTMCTNCTOCTPCTQCTRCTSCTTCTUCTVCTWCTXCTYCT" \
++    "ZCUDCUECUFCUGCUHCUICUJCQOCQPCQQCQRCQSCQTCQUCQVCQWCQXCQYCQZCRDCRECRFCRGCRHCRICRJCRKCRLCRMCRNCROCRPCRQCRRCRSCRTCRU" \
++    "CRVCRWCRXCRYCRZCSDCSECSFCSGCSHCSICSJCSKCSLCWICWJCWKCWLCWMCWNCWOCWPCWQCWRCWSCWTCWUCWVCWWCWXCWYCWZCXDCXECXFCXGCXHC" \
++    "XICXJCXKCXLCXMCXNCXOCXPCXQCXRCXSCXTCXUCXVCXWCXXCXYCXZCYDCYECYFCUKCULCUMCUNCUOCUPCUQCURCUSCUTCUUCUVCUWCUXCUYCUZCV" \
++    "DCVECVFCVGCVHCVICVJCVKCVLCVMCVNCVOCVPCVQCVRCVSCVTCVUCVVCVWCVXCVYCVZCWDCWECWFCWGCWHEDDFDDGDDHDDIDDJDDKDDLDDMDDNDD" \
++    "ODDPDDQDDRDDSDDTDDUDDVDDWDDXDDYDDZDEEDEFDEGDEHDEIDEJDEKDELDEMDENDEODEPDEQDERDESDETDEUDEVDEWDEXDEYDEZDFCYGCYHCYIC" \
++    "YJCYKCYLCYMCYNCYOCYPCYQCYRCYSCYTCYUCYVCYWCYXCYYCYZCZDCZECZFCZGCZHCZICZJCZKCZLCZMCZNCZOCZPCZQCZRCZSCZTCZUCZVCZWCZ" \
++    "XCZYCZZDDDEDHFDHGDHHDHIDHJDHKDHLDHMDHNDHODHPDHQDHRDHSDHTDHUDHVDHWDHXDHYDHZDIEDIFDIGDIHDIIDIJDIKDILDIMDINDIODIPDI" \
++    "QDIRDISDITDIUDIVDIWDIXDIYDIZDJEDFFDFGDFHDFIDFJDFKDFLDFMDFNDFODFPDFQDFRDFSDFTDFUDFVDFWDFXDFYDFZDGEDGFDGGDGHDGIDGJ" \
++    "DGKDGLDGMDGNDGODGPDGQDGRDGSDGTDGUDGVDGWDGXDGYDGZDHEDLFDLGDLHDLIDLJDLKDLLDLMDLNDLODLPDLQDLRDLSDLTDLUDLVDLWDLXDLYD" \
++    "LZDMEDMFDMGDMHDMIDMJDMKDMLDMMDMNDMODMPDMQDMRDMSDMTDMUDMVDMWDMXDMYDMZDNEDJFDJGDJHDJIDJJDJKDJLDJMDJNDJODJPDJQDJRDJ" \
++    "SDJTDJUDJVDJWDJXDJYDJZDKEDKFDKGDKHDKIDKJDKKDKLDKMDKNDKODKPDKQDKRDKSDKTDKUDKVDKWDKXDKYDKZDLEDPFDPGDPHDPIDPJDPKDPL" \
++    "DPMDPNDPODPPDPQDPRDPSDPTDPUDPVDPWDPXDPYDPZDQEDQFDQGDQHDQIDQJDQKDQLDQMDQNDQODQPDQQDQRDQSDQTDQUDQVDQWDQXDQYDQZDRED" \
++    "NFDNGDNHDNIDNJDNKDNLDNMDNNDNODNPDNQDNRDNSDNTDNUDNVDNWDNXDNYDNZDOEDOFDOGDOHDOIDOJDOKDOLDOMDONDOODOPDOQDORDOSDOTDO" \
++    "UDOVDOWDOXDOYDOZDPEDTFDTGDTHDTIDTJDTKDTLDTMDTNDTODTPDTQDTRDTSDTTDTUDTVDTWDTXDTYDTZDUEDUFDUGDUHDUIDUJDUKDULDUMDUN" \
++    "DUODUPDUQDURDUSDUTDUUDUVDUWDUXDUYDUZDVEDRFDRGDRHDRIDRJDRKDRLDRMDRNDRODRPDRQDRRDRSDRTDRUDRVDRWDRXDRYDRZDSEDSFDSGD" \
++    "SHDSIDSJDSKDSLDSMDSNDSODSPDSQDSRDSSDSTDSUDSVDSWDSXDSYDSZDTEDXFDXGDXHDXIDXJDXKDXLDXMDXNDXODXPDXQDXRDXSDXTDXUDXVDX" \
++    "WDXXDXYDXZDYEDYFDYGDYHDYIDYJDYKDYLDYMDYNDYODYPDYQDYRDYSDYTDYUDYVDYWDYXDYYDYZDZEDVFDVGDVHDVIDVJDVKDVLDVMDVNDVODVP" \
++    "DVQDVRDVSDVTDVUDVVDVWDVXDVYDVZDWEDWFDWGDWHDWIDWJDWKDWLDWMDWNDWODWPDWQDWRDWSDWTDWUDWVDWWDWXDWYDWZDXFGEFHEFIEFJEFK" \
++    "EFLEFMEFNEFOEFPEFQEFREFSEFTEFUEFVEFWEFXEFYEFZEGFEGGEGHEGIEGJEGKEGLEGMEGNEGOEGPEGQEGREGSEGTEGUEGVEGWEGXEGYEGZEHFE" \
++    "HGEHHEEDZFDZGDZHDZIDZJDZKDZLDZMDZNDZODZPDZQDZRDZSDZTDZUDZVDZWDZXDZYDZZEEEFEEGEEHEEIEEJEEKEELEEMEENEEOEEPEEQEEREE" \
++    "SEETEEUEEVEEWEEXEEYEEZEFFEJKEJLEJMEJNEJOEJPEJQEJREJSEJTEJUEJVEJWEJXEJYEJZEKFEKGEKHEKIEKJEKKEKLEKMEKNEKOEKPEKQEKR" \
++    "EKSEKTEKUEKVEKWEKXEKYEKZELFELGELHELIELJELKELLEHIEHJEHKEHLEHMEHNEHOEHPEHQEHREHSEHTEHUEHVEHWEHXEHYEHZEIFEIGEIHEIIE" \
++    "IJEIKEILEIMEINEIOEIPEIQEIREISEITEIUEIVEIWEIXEIYEIZEJFEJGEJHEJIEJJENOENPENQENRENSENTENUENVENWENXENYENZEOFEOGEOHEO" \
++    "IEOJEOKEOLEOMEONEOOEOPEOQEOREOSEOTEOUEOVEOWEOXEOYEOZEPFEPGEPHEPIEPJEPKEPLEPMEPNEPOEPPELMELNELOELPELQELRELSELTELU" \
++    "ELVELWELXELYELZEMFEMGEMHEMIEMJEMKEMLEMMEMNEMOEMPEMQEMREMSEMTEMUEMVEMWEMXEMYEMZENFENGENHENIENJENKENLENMENNERSERTE" \
++    "RUERVERWERXERYERZESFESGESHESIESJESKESLESMESNESOESPESQESRESSESTESUESVESWESXESYESZETFETGETHETIETJETKETLETMETNETOET" \
++    "PETQETRETSETTEPQEPREPSEPTEPUEPVEPWEPXEPYEPZEQFEQGEQHEQIEQJEQKEQLEQMEQNEQOEQPEQQEQREQSEQTEQUEQVEQWEQXEQYEQZERFERG" \
++    "ERHERIERJERKERLERMERNEROERPERQERREVWEVXEVYEVZEWFEWGEWHEWIEWJEWKEWLEWMEWNEWOEWPEWQEWREWSEWTEWUEWVEWWEWXEWYEWZEXFE" \
++    "XGEXHEXIEXJEXKEXLEXMEXNEXOEXPEXQEXREXSEXTEXUEXVEXWEXXETUETVETWETXETYETZEUFEUGEUHEUIEUJEUKEULEUMEUNEUOEUPEUQEUREU" \
++    "SEUTEUUEUVEUWEUXEUYEUZEVFEVGEVHEVIEVJEVKEVLEVMEVNEVOEVPEVQEVREVSEVTEVUEVVEFFGFFHFFIFFJFFKFFLFFMFFNFFOFFPFFQFFRFF" \
++    "SFFTFFUFFVFFWFFXFFYFFZFGGFGHFGIFGJFGKFGLFGMFGNFGOFGPFGQFGRFGSFGTFGUFGVFGWFGXFGYFGZFHGFHHFHIFHJXYEXZEYFEYGEYHEYIE" \
++    "YJEYKEYLEYMEYNEYOEYPEYQEYREYSEYTEYUEYVEYWEYXEYYEYZEZFEZGEZHEZIEZJEZKEZLEZMEZNEZOEZPEZQEZREZSEZTEZUEZVEZWEZXEZYEZ" \
++    "ZFFJOFJPFJQFJRFJSFJTFJUFJVFJWFJXFJYFJZFKGFKHFKIFKJFKKFKLFKMFKNFKOFKPFKQFKRFKSFKTFKUFKVFKWFKXFKYFKZFLGFLHFLIFLJFL" \
++    "KFLLFLMFLNFLOFLPFLQFLRFHKFHLFHMFHNFHOFHPFHQFHRFHSFHTFHUFHVFHWFHXFHYFHZFIGFIHFIIFIJFIKFILFIMFINFIOFIPFIQFIRFISFIT" \
++    "FIUFIVFIWFIXFIYFIZFJGFJHFJIFJJFJKFJLFJMFJNFNWFNXFNYFNZFOGFOHFOIFOJFOKFOLFOMFONFOOFOPFOQFORFOSFOTFOUFOVFOWFOXFOYF" \
++    "OZFPGFPHFPIFPJFPKFPLFPMFPNFPOFPPFPQFPRFPSFPTFPUFPVFPWFPXFPYFPZFLSFLTFLUFLVFLWFLXFLYFLZFMGFMHFMIFMJFMKFMLFMMFMNFM" \
++    "OFMPFMQFMRFMSFMTFMUFMVFMWFMXFMYFMZFNGFNHFNIFNJFNKFNLFNMFNNFNOFNPFNQFNRFNSFNTFNUFNVFSKFSLFSMFSNFSOFSPFSQFSRFSSFST" \
++    "FSUFSVFSWFSXFSYFSZFTGFTHFTIFTJFTKFTLFTMFTNFTOFTPFTQFTRFTSFTTFTUFTVFTWFTXFTYFTZFUGFUHFUIFUJFUKFULFUMFUNFQGFQHFQIF" \
++    "QJFQKFQLFQMFQNFQOFQPFQQFQRFQSFQTFQUFQVFQWFQXFQYFQZFRGFRHFRIFRJFRKFRLFRMFRNFROFRPFRQFRRFRSFRTFRUFRVFRWFRXFRYFRZFS" \
++    "GFSHFSIFSJFWSFWTFWUFWVFWWFWXFWYFWZFXGFXHFXIFXJFXKFXLFXMFXNFXOFXPFXQFXRFXSFXTFXUFXVFXWFXXFXYFXZFYGFYHFYIFYJFYKFYL" \
++    "FYMFYNFYOFYPFYQFYRFYSFYTFYUFYVFUOFUPFUQFURFUSFUTFUUFUVFUWFUXFUYFUZFVGFVHFVIFVJFVKFVLFVMFVNFVOFVPFVQFVRFVSFVTFVUF" \
++    "VVFVWFVXFVYFVZFWGFWHFWIFWJFWKFWLFWMFWNFWOFWPFWQFWRHGHIGHJGHKGHLGHMGHNGHOGHPGHQGHRGHSGHTGHUGHVGHWGHXGHYGHZGIHGIIG" \
++    "IJGIKGILGIMGINGIOGIPGIQGIRGISGITGIUGIVGIWGIXGIYGIZGJHGJIGJJGJKGJLGJMGJFYWFYXFYYFYZFZGFZHFZIFZJFZKFZLFZMFZNFZOFZP" \
++    "FZQFZRFZSFZTFZUFZVFZWFZXFZYFZZGGGHGGIGGJGGKGGLGGMGGNGGOGGPGGQGGRGGSGGTGGUGGVGGWGGXGGYGGZGHTGLUGLVGLWGLXGLYGLZGMH" \
++    "GMIGMJGMKGMLGMMGMNGMOGMPGMQGMRGMSGMTGMUGMVGMWGMXGMYGMZGNHGNIGNJGNKGNLGNMGNNGNOGNPGNQGNRGNSGNTGNUGNVGNWGNXGNYGNNG" \
++    "JOGJPGJQGJRGJSGJTGJUGJVGJWGJXGJYGJZGKHGKIGKJGKKGKLGKMGKNGKOGKPGKQGKRGKSGKTGKUGKVGKWGKXGKYGKZGLHGLIGLJGLKGLLGLMGL" \
++    "NGLOGLPGLQGLRGLSGLMGQNGQOGQPGQQGQRGQSGQTGQUGQVGQWGQXGQYGQZGRHGRIGRJGRKGRLGRMGRNGROGRPGRQGRRGRSGRTGRUGRVGRWGRXGRY" \
++    "GRZGSHGSIGSJGSKGSLGSMGSNGSOGSPGSQGSRGSZGOHGOIGOJGOKGOLGOMGONGOOGOPGOQGORGOSGOTGOUGOVGOWGOXGOYGOZGPHGPIGPJGPKGPLG" \
++    "PMGPNGPOGPPGPQGPRGPSGPTGPUGPVGPWGPXGPYGPZGQHGQIGQJGQKGQLGQYGUZGVHGVIGVJGVKGVLGVMGVNGVOGVPGVQGVRGVSGVTGVUGVVGVWGV" \
++    "XGVYGVZGWHGWIGWJGWKGWLGWMGWNGWOGWPGWQGWRGWSGWTGWUGWVGWWGWXGWYGWZGXHGXIGXJGXKGXSGSTGSUGSVGSWGSXGSYGSZGTHGTIGTJGTK" \
++    "GTLGTMGTNGTOGTPGTQGTRGTSGTTGTUGTVGTWGTXGTYGTZGUHGUIGUJGUKGULGUMGUNGUOGUPGUQGURGUSGUTGUUGUVGUWGUXGURGZSGZTGZUGZVG" \
++    "ZWGZXGZYGZZHHHIHHJHHKHHLHHMHHNHHOHHPHHQHHRHHSHHTHHUHHVHHWHHXHHYHHZHIIHIJHIKHILHIMHINHIOHIPHIQHIRHISHITHIUHIVHIWH" \
++    "IXHIYHLGXMGXNGXOGXPGXQGXRGXSGXTGXUGXVGXWGXXGXYGXZGYHGYIGYJGYKGYLGYMGYNGYOGYPGYQGYRGYSGYTGYUGYVGYWGYXGYYGYZGZHGZI" \
++    "GZJGZKGZLGZMGZNGZOGZPGZQGZLPHLQHLRHLSHLTHLUHLVHLWHLXHLYHLZHMIHMJHMKHMLHMMHMNHMOHMPHMQHMRHMSHMTHMUHMVHMWHMXHMYHMZ" \
++    "HNIHNJHNKHNLHNMHNNHNOHNPHNQHNRHNSHNTHNUHNVHNWHIZHJIHJJHJKHJLHJMHJNHJOHJPHJQHJRHJSHJTHJUHJVHJWHJXHJYHJZHKIHKJHKKH" \
++    "KLHKMHKNHKOHKPHKQHKRHKSHKTHKUHKVHKWHKXHKYHKZHLIHLJHLKHLLHLMHLNHLOHQNHQOHQPHQQHQRHQSHQTHQUHQVHQWHQXHQYHQZHRIHRJHR" \
++    "KHRLHRMHRNHROHRPHRQHRRHRSHRTHRUHRVHRWHRXHRYHRZHSIHSJHSKHSLHSMHSNHSOHSPHSQHSRHSSHSTHSUHNXHNYHNZHOIHOJHOKHOLHOMHON" \
++    "HOOHOPHOQHORHOSHOTHOUHOVHOWHOXHOYHOZHPIHPJHPKHPLHPMHPNHPOHPPHPQHPRHPSHPTHPUHPVHPWHPXHPYHPZHQIHQJHQKHQLHQMHVLHVMH" \
++    "VNHVOHVPHVQHVRHVSHVTHVUHVVHVWHVXHVYHVZHWIHWJHWKHWLHWMHWNHWOHWPHWQHWRHWSHWTHWUHWVHWWHWXHWYHWZHXIHXJHXKHXLHXMHXNHX" \
++    "OHXPHXQHXRHXSHSVHSWHSXHSYHSZHTIHTJHTKHTLHTMHTNHTOHTPHTQHTRHTSHTTHTUHTVHTWHTXHTYHTZHUIHUJHUKHULHUMHUNHUOHUPHUQHUR" \
++    "HUSHUTHUUHUVHUWHUXHUYHUZHVIHVJHVKHIIKIILIIMIINIIOIIPIIQIIRIISIITIIUIIVIIWIIXIIYIIZIJJIJKIJLIJMIJNIJOIJPIJQIJRIJS" \
++    "IJTIJUIJVIJWIJXIJYIJZIKJIKKIKLIKMIKNIKOIKPIKQIKRIKSIKTXTHXUHXVHXWHXXHXYHXZHYIHYJHYKHYLHYMHYNHYOHYPHYQHYRHYSHYTHY" \
++    "UHYVHYWHYXHYYHYZHZIHZJHZKHZLHZMHZNHZOHZPHZQHZRHZSHZTHZUHZVHZWHZXHZYHZZIIIJINNINOINPINQINRINSINTINUINVINWINXINYIN" \
++    "ZIOJIOKIOLIOMIONIOOIOPIOQIORIOSIOTIOUIOVIOWIOXIOYIOZIPJIPKIPLIPMIPNIPOIPPIPQIPRIPSIPTIPUIPVIPWIKUIKVIKWIKXIKYIKZ" \
++    "ILJILKILLILMILNILOILPILQILRILSILTILUILVILWILXILYILZIMJIMKIMLIMMIMNIMOIMPIMQIMRIMSIMTIMUIMVIMWIMXIMYIMZINJINKINLI" \
++    "NMISQISRISSISTISUISVISWISXISYISZITJITKITLITMITNITOITPITQITRITSITTITUITVITWITXITYITZIUJIUKIULIUMIUNIUOIUPIUQIURIU" \
++    "SIUTIUUIUVIUWIUXIUYIUZIPXIPYIPZIQJIQKIQLIQMIQNIQOIQPIQQIQRIQSIQTIQUIQVIQWIQXIQYIQZIRJIRKIRLIRMIRNIROIRPIRQIRRIRS" \
++    "IRTIRUIRVIRWIRXIRYIRZISJISKISLISMISNISOISPIXTIXUIXVIXWIXXIXYIXZIYJIYKIYLIYMIYNIYOIYPIYQIYRIYSIYTIYUIYVIYWIYXIYYI" \
++    "YZIZJIZKIZLIZMIZNIZOIZPIZQIZRIZSIZTIZUIZVIZWIZXIZYIZZJJJKJJLJJIVJIVKIVLIVMIVNIVOIVPIVQIVRIVSIVTIVUIVVIVWIVXIVYIV" \
++    "ZIWJIWKIWLIWMIWNIWOIWPIWQIWRIWSIWTIWUIWVIWWIWXIWYIWZIXJIXKIXLIXMIXNIXOIXPIXQIXRIXSYJLZJMKJMLJMMJMNJMOJMPJMQJMRJM" \
++    "SJMTJMUJMVJMWJMXJMYJMZJNKJNLJNMJNNJNOJNPJNQJNRJNSJNTJNUJNVJNWJNXJNYJNZJOKJOLJOMJONJOOJOPJOQJORJOSJOTJOMJJNJJOJJP" \
++    "JJQJJRJJSJJTJJUJJVJJWJJXJJYJJZJKKJKLJKMJKNJKOJKPJKQJKRJKSJKTJKUJKVJKWJKXJKYJKZJLKJLLJLMJLNJLOJLPJLQJLRJLSJLTJLUJ" \
++    "LVJLWJLXJLQJRRJRSJRTJRUJRVJRWJRXJRYJRZJSKJSLJSMJSNJSOJSPJSQJSRJSSJSTJSUJSVJSWJSXJSYJSZJTKJTLJTMJTNJTOJTPJTQJTRJT" \
++    "SJTTJTUJTVJTWJTXJTYJTZJUKJULJUUJOVJOWJOXJOYJOZJPKJPLJPMJPNJPOJPPJPQJPRJPSJPTJPUJPVJPWJPXJPYJPZJQKJQLJQMJQNJQOJQP" \
++    "JQQJQRJQSJQTJQUJQVJQWJQXJQYJQZJRKJRLJRMJRNJROJRPJRYJWZJXKJXLJXMJXNJXOJXPJXQJXRJXSJXTJXUJXVJXWJXXJXYJXZJYKJYLJYMJ" \
++    "YNJYOJYPJYQJYRJYSJYTJYUJYVJYWJYXJYYJYZJZKJZLJZMJZNJZOJZPJZQJZRJZSJZTJZMJUNJUOJUPJUQJURJUSJUTJUUJUVJUWJUXJUYJUZJV" \
++    "KJVLJVMJVNJVOJVPJVQJVRJVSJVTJVUJVVJVWJVXJVYJVZJWKJWLJWMJWNJWOJWPJWQJWRJWSJWTJWUJWVJWWJWXJWMTKMUKMVKMWKMXKMYKMZKN" \
++    "LKNMKNNKNOKNPKNQKNRKNSKNTKNUKNVKNWKNXKNYKNZKOLKOMKONKOOKOPKOQKORKOSKOTKOUKOVKOWKOXKOYKOZKPLKPMKPNKPOKPPKPQKPRKUJ" \
++    "ZVJZWJZXJZYJZZKKKLKKMKKNKKOKKPKKQKKRKKSKKTKKUKKVKKWKKXKKYKKZKLLKLMKLNKLOKLPKLQKLRKLSKLTKLUKLVKLWKLXKLYKLZKMLKMMK" \
++    "MNKMOKMPKMQKMRKMSKSRKSSKSTKSUKSVKSWKSXKSYKSZKTLKTMKTNKTOKTPKTQKTRKTSKTTKTUKTVKTWKTXKTYKTZKULKUMKUNKUOKUPKUQKURKU" \
++    "SKUTKUUKUVKUWKUXKUYKUZKVLKVMKVNKVOKVPKPSKPTKPUKPVKPWKPXKPYKPZKQLKQMKQNKQOKQPKQQKQRKQSKQTKQUKQVKQWKQXKQYKQZKRLKRM" \
++    "KRNKROKRPKRQKRRKRSKRTKRUKRVKRWKRXKRYKRZKSLKSMKSNKSOKSPKSQKYPKYQKYRKYSKYTKYUKYVKYWKYXKYYKYZKZLKZMKZNKZOKZPKZQKZRK" \
++    "ZSKZTKZUKZVKZWKZXKZYKZZLLLMLLNLLOLLPLLQLLRLLSLLTLLULLVLLWLLXLLYLLZLMMLMNLMOLMPVQKVRKVSKVTKVUKVVKVWKVXKVYKVZKWLKW" \
++    "MKWNKWOKWPKWQKWRKWSKWTKWUKWVKWWKWXKWYKWZKXLKXMKXNKXOKXPKXQKXRKXSKXTKXUKXVKXWKXXKXYKXZKYLKYMKYNKYOKLPSLPTLPULPVLP" \
++    "WLPXLPYLPZLQMLQNLQOLQPLQQLQRLQSLQTLQULQVLQWLQXLQYLQZLRMLRNLROLRPLRQLRRLRSLRTLRULRVLRWLRXLRYLRZLSMLSNLSOLSPLSQLSR" \
++    "LSSLSTLMQLMRLMSLMTLMULMVLMWLMXLMYLMZLNMLNNLNOLNPLNQLNRLNSLNTLNULNVLNWLNXLNYLNZLOMLONLOOLOPLOQLORLOSLOTLOULOVLOWL" \
++    "OXLOYLOZLPMLPNLPOLPPLPQLPRLVWLVXLVYLVZLWMLWNLWOLWPLWQLWRLWSLWTLWULWVLWWLWXLWYLWZLXMLXNLXOLXPLXQLXRLXSLXTLXULXVLX" \
++    "WLXXLXYLXZLYMLYNLYOLYPLYQLYRLYSLYTLYULYVLYWLYXLSULSVLSWLSXLSYLSZLTMLTNLTOLTPLTQLTRLTSLTTLTULTVLTWLTXLTYLTZLUMLUN" \
++    "LUOLUPLUQLURLUSLUTLUULUVLUWLUXLUYLUZLVMLVNLVOLVPLVQLVRLVSLVTLVULVVOMOPMOQMORMOSMOTMOUMOVMOWMOXMOYMOZMPNMPOMPPMPQ" \
++    "MPRMPSMPTMPUMPVMPWMPXMPYMPZMQNMQOMQPMQQMQRMQSMQTMQUMQVMQWMQXMQYMQZMRNMROMRPMRQMRRMRSMRLYYLYZLZMLZNLZOLZPLZQLZRLZ" \
++    "SLZTLZULZVLZWLZXLZYLZZMMMNMMOMMPMMQMMRMMSMMTMMUMMVMMWMMXMMYMMZMNNMNOMNPMNQMNRMNSMNTMNUMNVMNWMNXMNYMNZMONMOYMUZMV" \
++    "NMVOMVPMVQMVRMVSMVTMVUMVVMVWMVXMVYMVZMWNMWOMWPMWQMWRMWSMWTMWUMWVMWWMWXMWYMWZMXNMXOMXPMXQMXRMXSMXTMXUMXVMXWMXXMXY" \
++    "MXZMYNMYOMYPMYTMRUMRVMRWMRXMRYMRZMSNMSOMSPMSQMSRMSSMSTMSUMSVMSWMSXMSYMSZMTNMTOMTPMTQMTRMTSMTTMTUMTVMTWMTXMTYMTZM" \
++    "UNMUOMUPMUQMURMUSMUTMUUMUVMUWMUXMUOXNOYNOZNPONPPNPQNPRNPSNPTNPUNPVNPWNPXNPYNPZNQONQPNQQNQRNQSNQTNQUNQVNQWNQXNQYN" \
++    "QZNRONRPNRQNRRNRSNRTNRUNRVNRWNRXNRYNRZNSONSPNSQNSRNSSNQMYRMYSMYTMYUMYVMYWMYXMYYMYZMZNMZOMZPMZQMZRMZSMZTMZUMZVMZW" \
++    "MZXMZYMZZNNNONNPNNQNNRNNSNNTNNUNNVNNWNNXNNYNNZNOONOPNOQNORNOSNOTNOUNOVNOWNWPNWQNWRNWSNWTNWUNWVNWWNWXNWYNWZNXONXP" \
++    "NXQNXRNXSNXTNXUNXVNXWNXXNXYNXZNYONYPNYQNYRNYSNYTNYUNYVNYWNYXNYYNYZNZONZPNZQNZRNZSNZTNZUNZVNZWNSTNSUNSVNSWNSXNSYN" \
++    "SZNTONTPNTQNTRNTSNTTNTUNTVNTWNTXNTYNTZNUONUPNUQNURNUSNUTNUUNUVNUWNUXNUYNUZNVONVPNVQNVRNVSNVTNVUNVVNVWNVXNVYNVZNW" \
++    "ONORXORYORZOSPOSQOSROSSOSTOSUOSVOSWOSXOSYOSZOTPOTQOTROTSOTTOTUOTVOTWOTXOTYOTZOUPOUQOUROUSOUTOUUOUVOUWOUXOUYOUZOV" \
++    "POVQOVROVSOVTOVUOVVOVWZXNZYNZZOOOPOOQOOROOSOOTOOUOOVOOWOOXOOYOOZOPPOPQOPROPSOPTOPUOPVOPWOPXOPYOPZOQPOQQOQROQSOQT" \
++    "OQUOQVOQWOQXOQYOQZORPORQORRORSORTORUORVORWOZXOZYOZZPPPQPPRPPSPPTPPUPPVPPWPPXPPYPPZPQQPQRPQSPQTPQUPQVPQWPQXPQYPQZ" \
++    "PRQPRRPRSPRTPRUPRVPRWPRXPRYPRZPSQPSRPSSPSTPSUPSVPSWPSXPSYPSZPTOVXOVYOVZOWPOWQOWROWSOWTOWUOWVOWWOWXOWYOWZOXPOXQOX" \
++    "ROXSOXTOXUOXVOXWOXXOXYOXZOYPOYQOYROYSOYTOYUOYVOYWOYXOYYOYZOZPOZQOZROZSOZTOZUOZVOZWQPTRPTSPTTPTUPTV";
++
++#endif /* CVE_2018_25032_H */
+\ No newline at end of file
+diff --git a/test/example.c b/test/example.c
+index 949f4f6..b60ddc4 100644
+--- a/test/example.c
++++ b/test/example.c
+@@ -7,6 +7,7 @@
+ 
+ #include "zlib.h"
+ #include <stdio.h>
++#include "CVE-2018-25032.h"
+ 
+ #ifdef STDC
+ #  include <string.h>
+@@ -537,6 +538,155 @@ void test_dict_inflate(compr, comprLen, uncompr, uncomprLen)
+     }
+ }
+ 
++void test_CVE_2018_25032(data, level, window_bits, mem_level, strategy)
++    unsigned char *data;
++    int level, window_bits, mem_level, strategy;
++{
++    int err;
++    uLong len = (uLong)strlen(data) + 1;
++
++    // deflate
++    z_stream c_strm;
++    c_strm.zalloc = Z_NULL;
++    c_strm.zfree = Z_NULL;
++    c_strm.opaque = (void *)0;
++    c_strm.total_in = 0;
++    c_strm.total_out = 0;
++    c_strm.next_in = data;
++    c_strm.avail_in = len;
++    err = deflateInit2(&c_strm, level, Z_DEFLATED, window_bits, mem_level, strategy);
++    CHECK_ERR(err, "CVE-2018-25032");
++
++    uLong outlen = deflateBound(&c_strm, len);
++    unsigned char *c_out = (unsigned char *)calloc(outlen, 1);
++    unsigned char *d_out = (unsigned char *)calloc(len, 1);
++    if (c_out == Z_NULL || d_out == Z_NULL) {
++        printf("out of memory\n");
++        exit(1);
++    }
++    c_strm.next_out = c_out;
++    c_strm.avail_out = outlen;
++ 
++    err = deflate(&c_strm, Z_FINISH);
++    if (err != Z_STREAM_END) {
++        fprintf(stderr, "CVE-2018-25032 error: %d\n", err);
++        exit(1);
++    }
++
++    err = deflateEnd(&c_strm);
++    CHECK_ERR(err, "CVE-2018-25032");
++ 
++    // inflate
++    z_stream d_strm;
++    d_strm.zalloc = Z_NULL;
++    d_strm.zfree = Z_NULL;
++    d_strm.opaque = (void *)0;
++    d_strm.next_in = c_out;
++    d_strm.avail_in = c_strm.total_out;
++    d_strm.next_out = d_out;
++    d_strm.avail_out = len;
++    err = inflateInit2(&d_strm, window_bits);
++    CHECK_ERR(err, "CVE-2018-25032");
++ 
++    err = inflate(&d_strm, Z_FINISH);
++    if (err != Z_STREAM_END) {
++        fprintf(stderr, "CVE-2018-25032 error %d\n", err);
++        exit(1);
++    }
++ 
++    err = inflateEnd(&d_strm);
++    CHECK_ERR(err, "CVE-2018-25032");
++
++    if (strcmp(data, d_out)) {
++        fprintf(stderr, "CVE-2018-25032 error\n");
++        exit(1);
++    }
++ 
++    free(c_out);
++    free(d_out);
++}
++
++void test_CVE_2022_37434(compr, comprLen, uncompr, uncomprLen)
++    Byte *compr, *uncompr;
++    uLong comprLen, uncomprLen;
++{
++    int err;
++
++    // deflate gzip
++    uLong len = (uLong)strlen(hello) + 1;
++    z_stream c_strm;
++    c_strm.zalloc = Z_NULL;
++    c_strm.zfree = Z_NULL;
++    c_strm.opaque = (void *)0;
++    c_strm.total_in = 0;
++    c_strm.total_out = 0;
++    c_strm.next_in = hello;
++    c_strm.avail_in = len;
++    c_strm.next_out = compr;
++    c_strm.avail_out = comprLen;
++    err = deflateInit2(&c_strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 31, MAX_MEM_LEVEL, Z_DEFAULT_STRATEGY);
++    CHECK_ERR(err, "CVE-2022-37434");
++
++    gz_header c_head;
++    c_head.comment = Z_NULL;
++    c_head.name = Z_NULL;
++    c_head.extra = (unsigned char*)malloc(100); /* 100 bytes of extra data */
++    c_head.extra_len = 100;
++    if (c_head.extra == Z_NULL) {
++        printf("out of memory\n");
++        exit(1);
++    }
++    err = deflateSetHeader(&c_strm, &c_head);
++    CHECK_ERR(err, "CVE-2022-37434");
++
++    err = deflate(&c_strm, Z_FINISH);
++    if (err != Z_STREAM_END) {
++        fprintf(stderr, "CVE-2022-37434 error %d\n", err);
++        exit(1);
++    }
++
++    err = deflateEnd(&c_strm);
++    CHECK_ERR(err, "CVE-2022-37434");
++
++    // inflate gzip
++    z_stream d_strm;
++    d_strm.zalloc = Z_NULL;
++    d_strm.zfree = Z_NULL;
++    d_strm.opaque = (void *)0;
++    d_strm.total_in = 0;
++    d_strm.total_out = 0;
++    d_strm.next_in = compr;
++    d_strm.next_out = uncompr;
++    d_strm.avail_out = uncomprLen;
++    err = inflateInit2(&d_strm, 31); /* inflate gzip data, and set windowBits = 15,  */
++    CHECK_ERR(err, "CVE-2022-37434");
++
++    gz_header d_head;
++    d_head.extra = (unsigned char*)malloc(10); /* malloc 10 bytes of memory to extra, less than real extra data length(100) */
++    d_head.extra_max = 10;
++    if (c_head.extra == Z_NULL) {
++        printf("out of memory\n");
++        exit(1);
++    }
++    err = inflateGetHeader(&d_strm, &d_head);
++    CHECK_ERR(err, "CVE-2022-37434");
++
++    do {
++        d_strm.avail_in = 5;
++        err = inflate(&d_strm, Z_NO_FLUSH);
++        if (err == Z_STREAM_END) {
++            break;
++        }
++        CHECK_ERR(err, "CVE-2022-37434");
++    } while (d_strm.total_in < c_strm.total_out);
++
++    err = inflateEnd(&d_strm);
++    CHECK_ERR(err, "CVE-2022-37434");
++
++    free(c_head.extra);
++    free(d_head.extra);
++}
++
+ /* ===========================================================================
+  * Usage:  example [output.gz  [input.gz]]
+  */
+@@ -594,6 +744,15 @@ int main(argc, argv)
+     test_dict_deflate(compr, comprLen);
+     test_dict_inflate(compr, comprLen, uncompr, uncomprLen);
+ 
++    test_CVE_2022_37434(compr, comprLen, uncompr, uncomprLen);
++
++    test_CVE_2018_25032(default_file_data, 1, 15, 1, Z_FIXED);
++    test_CVE_2018_25032(default_file_data, 2, 15, 1, Z_FIXED);
++    test_CVE_2018_25032(default_file_data, 6, 15, 1, Z_FIXED);
++    test_CVE_2018_25032(fixed_file_data, 1, 15, 1, Z_FIXED);
++    test_CVE_2018_25032(fixed_file_data, 2, 15, 1, Z_FIXED);
++    test_CVE_2018_25032(fixed_file_data, 6, 15, 1, Z_FIXED);
++
+     free(compr);
+     free(uncompr);
+ 
+diff --git a/zconf.h b/zconf.h
+index 5e1d68a..8755f5c 100644
+--- a/zconf.h
++++ b/zconf.h
+@@ -8,6 +8,10 @@
+ #ifndef ZCONF_H
+ #define ZCONF_H
+ 
++#ifdef INFLATE_HOOK  /* may be set to # if 1 by ./configure --inflatehook */
++#define Z_INFLATE_HOOK
++#endif
++
+ /*
+  * If you *really* need a unique prefix for all types and library functions,
+  * compile with -DZ_PREFIX. The "standard" zlib should be compiled without it.
+@@ -125,6 +129,9 @@
+ #  define inflate_copyright     z_inflate_copyright
+ #  define inflate_fast          z_inflate_fast
+ #  define inflate_table         z_inflate_table
++#  ifdef Z_INFLATE_HOOK
++#    define inflateHookFuncRegister          z_inflateHookFuncRegister
++#  endif
+ #  ifndef Z_SOLO
+ #    define uncompress            z_uncompress
+ #    define uncompress2           z_uncompress2
+@@ -163,6 +170,8 @@
+ #  define gz_header_s           z_gz_header_s
+ #  define internal_state        z_internal_state
+ 
++/* variable from zutil.h */
++#  define z_errmsg              z_z_errmsg
+ #endif
+ 
+ #if defined(__MSDOS__) && !defined(MSDOS)
+diff --git a/zconf.h.cmakein b/zconf.h.cmakein
+index a7f24cc..f5d68a6 100644
+--- a/zconf.h.cmakein
++++ b/zconf.h.cmakein
+@@ -9,6 +9,7 @@
+ #define ZCONF_H
+ #cmakedefine Z_PREFIX
+ #cmakedefine Z_HAVE_UNISTD_H
++#cmakedefine Z_INFLATE_HOOK
+ 
+ /*
+  * If you *really* need a unique prefix for all types and library functions,
+@@ -127,6 +128,9 @@
+ #  define inflate_copyright     z_inflate_copyright
+ #  define inflate_fast          z_inflate_fast
+ #  define inflate_table         z_inflate_table
++#  ifdef Z_INFLATE_HOOK
++#    define inflateHookFuncRegister          z_inflateHookFuncRegister
++#  endif
+ #  ifndef Z_SOLO
+ #    define uncompress            z_uncompress
+ #    define uncompress2           z_uncompress2
+@@ -165,6 +169,8 @@
+ #  define gz_header_s           z_gz_header_s
+ #  define internal_state        z_internal_state
+ 
++/* variable from zutil.h */
++#  define z_errmsg              z_z_errmsg
+ #endif
+ 
+ #if defined(__MSDOS__) && !defined(MSDOS)
+diff --git a/zconf.h.in b/zconf.h.in
+index 5e1d68a..8755f5c 100644
+--- a/zconf.h.in
++++ b/zconf.h.in
+@@ -8,6 +8,10 @@
+ #ifndef ZCONF_H
+ #define ZCONF_H
+ 
++#ifdef INFLATE_HOOK  /* may be set to # if 1 by ./configure --inflatehook */
++#define Z_INFLATE_HOOK
++#endif
++
+ /*
+  * If you *really* need a unique prefix for all types and library functions,
+  * compile with -DZ_PREFIX. The "standard" zlib should be compiled without it.
+@@ -125,6 +129,9 @@
+ #  define inflate_copyright     z_inflate_copyright
+ #  define inflate_fast          z_inflate_fast
+ #  define inflate_table         z_inflate_table
++#  ifdef Z_INFLATE_HOOK
++#    define inflateHookFuncRegister          z_inflateHookFuncRegister
++#  endif
+ #  ifndef Z_SOLO
+ #    define uncompress            z_uncompress
+ #    define uncompress2           z_uncompress2
+@@ -163,6 +170,8 @@
+ #  define gz_header_s           z_gz_header_s
+ #  define internal_state        z_internal_state
+ 
++/* variable from zutil.h */
++#  define z_errmsg              z_z_errmsg
+ #endif
+ 
+ #if defined(__MSDOS__) && !defined(MSDOS)
+diff --git a/zlib.h b/zlib.h
+index 4a98e38..c463ea2 100644
+--- a/zlib.h
++++ b/zlib.h
+@@ -217,6 +217,11 @@ typedef gz_header FAR *gz_headerp;
+ 
+                         /* basic functions */
+ 
++#ifdef Z_INFLATE_HOOK
++typedef void (*inflate_hook_func)(void);
++ZEXTERN void ZEXPORT inflateHookFuncRegister(inflate_hook_func func);
++#endif
++
+ ZEXTERN const char * ZEXPORT zlibVersion OF((void));
+ /* The application can compare zlibVersion and ZLIB_VERSION for consistency.
+    If the first character differs, the library code actually used is not
+diff --git a/zutil.h b/zutil.h
+index d9a20ae..0bc7f4e 100644
+--- a/zutil.h
++++ b/zutil.h
+@@ -193,6 +193,7 @@ extern z_const char * const z_errmsg[10]; /* indexed by 2-zlib_error */
+     (!defined(_LARGEFILE64_SOURCE) || _LFS64_LARGEFILE-0 == 0)
+     ZEXTERN uLong ZEXPORT adler32_combine64 OF((uLong, uLong, z_off_t));
+     ZEXTERN uLong ZEXPORT crc32_combine64 OF((uLong, uLong, z_off_t));
++    ZEXTERN uLong ZEXPORT crc32_combine_gen64 OF((z_off_t));
+ #endif
+ 
+         /* common defaults */

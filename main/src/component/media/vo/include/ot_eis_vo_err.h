@@ -1,0 +1,69 @@
+/******************************************************************************
+ Copyright (C), 2022 Shenzhen Oritek Semiconductors Co., Ltd. All right reserved.
+******************************************************************************
+Description   : the VO error code.
+Created       : 2022/11/16
+Last Modified :
+******************************************************************************/
+#ifndef OT_EIS_VO_ERR_H
+#define OT_EIS_VO_ERR_H
+
+#include "ot_eis_errno.h"
+#include "ot_eis_mod.h"
+
+#ifdef __cplusplus
+#if __cplusplus
+extern "C"{
+#endif
+#endif /* __cplusplus */
+
+
+
+/* VO 特有的错误码 */
+typedef enum {
+    OT_EIS_VO_ERRNO_START = 0x50,
+    OT_EIS_VO_ERRNO_CREATE_HANDLE,
+    OT_EIS_VO_ERRNO_DESTROY_HANDLE,
+    OT_EIS_VO_ERRNO_RESOURCE_MANAGER,
+    OT_EIS_VO_ERRNO_SET_OVERLAY_ATTR,
+    OT_EIS_VO_ERRNO_INVALID_IN_PORT_HANDLE = 0x55,
+    OT_EIS_VO_ERRNO_INVALID_SURFACE_HANDLE,
+    OT_EIS_VO_ERRNO_INVALID_DISPLAY_HANDLE,
+    OT_EIS_VO_ERRNO_NOT_CFG,
+    OT_EIS_VO_ERRNO_NOT_PERM,
+    OT_EIS_VO_ERRNO_NOT_READY = 0x5A,
+    OT_EIS_VO_ERRNO_BINDED,
+    OT_EIS_VO_ERRNO_NOT_BINDED,
+    OT_EIS_VO_ERRNO_BUTT
+} ot_eis_vo_errno;
+
+/* VO define error code */
+#define OT_EIS_ERR_VO_INVALID_DISPLAY_HANDLE      OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_INVALID_DISPLAY_HANDLE)
+#define OT_EIS_ERR_VO_INVALID_IN_PORT_HANDLE      OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_INVALID_IN_PORT_HANDLE)
+#define OT_EIS_ERR_VO_INVALID_SURFACE_HANDLE      OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_INVALID_SURFACE_HANDLE)
+#define OT_EIS_ERR_VO_ILLEGAL_PARAM               OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_ERRNO_ILLEGAL_PARAM)
+#define OT_EIS_ERR_VO_NULL_PTR                    OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_ERRNO_NULL_PTR)
+#define OT_EIS_ERR_VO_NOT_CFG                     OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_NOT_CFG)
+#define OT_EIS_ERR_VO_NOT_SUPPORT                 OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_ERRNO_NO_SUPPORT)
+#define OT_EIS_ERR_VO_NOT_PERM                    OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_NOT_PERM)
+#define OT_EIS_ERR_VO_NOT_ENABLE                  OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_ERRNO_NO_ENABLE)
+#define OT_EIS_ERR_VO_NOT_DISABLE                 OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_ERRNO_NO_DISABLE)
+#define OT_EIS_ERR_VO_NO_MEM                      OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_ERRNO_NO_MEM)
+#define OT_EIS_ERR_VO_NOT_READY                   OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_NOT_READY)
+#define OT_EIS_ERR_VO_TIMEOUT                     OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_ERRNO_TIMEOUT)
+#define OT_EIS_ERR_VO_BUSY                        OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_ERRNO_BUSY)
+#define OT_EIS_ERR_VO_NOT_ATTACHED                OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_NOT_BINDED)
+#define OT_EIS_ERR_VO_ATTACHED                    OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_BINDED)
+
+#define OT_EIS_ERR_VO_CREATE_HANDLE               OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_CREATE_HANDLE)
+#define OT_EIS_ERR_VO_DESTROY_HANDLE              OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_DESTROY_HANDLE)
+#define OT_EIS_ERR_VO_RESOURCE_MANAGER            OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_RESOURCE_MANAGER)
+#define OT_EIS_ERR_VO_SET_OVERLAY_ATTR            OT_EIS_ERRNO_DEFINE(OT_EIS_MODULE_VO, OT_EIS_VO_ERRNO_SET_OVERLAY_ATTR)
+
+#ifdef __cplusplus
+#if __cplusplus
+}
+#endif
+#endif /* __cplusplus */
+
+#endif

@@ -1,0 +1,33 @@
+<Partition_Info>
+  <Part Sel="1" PartitionName="otfl" FlashType="spi" FileSystem="none" Start="0" Length="1536K" SelectFile="otfl_spinor.img.sig"/>
+  <Part Sel="1" PartitionName="misc" FlashType="spi" FileSystem="none" Start="1536K" Length="512K" SelectFile="misc.bin"/>
+  <Part Sel="1" PartitionName="uboot_a" FlashType="spi" FileSystem="none" Start="2M" Length="1M" SelectFile="uboot_spinor.img.sig"/>
+  <Part Sel="1" PartitionName="uboot_b" FlashType="spi" FileSystem="none" Start="3M" Length="1M" SelectFile="uboot_spinor.img.sig"/>
+  <Part Sel="1" PartitionName="bl31_a" FlashType="spi" FileSystem="none" Start="4M" Length="512K" SelectFile="bl31.img.sig"/>
+  <Part Sel="1" PartitionName="bl31_b" FlashType="spi" FileSystem="none" Start="4608K" Length="512K" SelectFile="bl31.img.sig"/>
+  <Part Sel="1" PartitionName="kernel_a" FlashType="spi" FileSystem="none" Start="5M" Length="8M" SelectFile="uImage-fdt.img.sig"/>
+  <Part Sel="1" PartitionName="kernel_b" FlashType="spi" FileSystem="none" Start="13M" Length="8M" SelectFile="uImage-fdt.img.sig"/>
+  <Part Sel="1" PartitionName="rootfs_a" FlashType="spi" FileSystem="none" Start="21M" Length="8M" SelectFile="rootfs_lq560tinyv100.ramdisk.img.sig"/>
+  <Part Sel="1" PartitionName="rootfs_b" FlashType="spi" FileSystem="none" Start="29M" Length="8M" SelectFile="rootfs_lq560tinyv100.ramdisk.img.sig"/>
+  <Part Sel="1" PartitionName="userfs_a" FlashType="spi" FileSystem="none" Start="37M" Length="32M" SelectFile="userfs_lq560tinyv100_64k.jffs2"/>
+  <Part Sel="1" PartitionName="userfs_b" FlashType="spi" FileSystem="none" Start="69M" Length="32M" SelectFile="userfs_lq560tinyv100_64k.jffs2"/>
+  <Part Sel="1" PartitionName="data" FlashType="spi" FileSystem="none" Start="101M" Length="27M" SelectFile="datafs_lq560tinyv100_64k.jffs2"/>
+  <Env>arch=arm
+baudrate=115200
+board=lq560tinyv100
+board_name=lq560tinyv100
+bootdelay=2
+cpu=armv8
+ethact=gmac0
+loadaddr=0x40080000
+soc=lq560tinyv100
+stderr=serial
+stdin=serial
+stdout=serial
+vendor=vendor
+verify=n
+
+bootargs=mem=132928K console=ttyAMA0,115200 clk_ignore_unused root=/dev/ram0 rootfstype=romfs initrd=0x44000000,0x2000000
+bootcmd=ab_part_offset bl31 1 kernel 1 rootfs 1; sf probe 0; verify ${bl31_offset} 0x4000fe00; ipcboot bl31 0x4000fe00; verify ${kernel_offset} 0x43000000; ugzip 0x43000200 0x42000000; verify ${rootfs_offset} 0x46000000; ugzip 0x46000200 0x44000000; ipcboot uimgfdt 0x42000000
+</Env>
+</Partition_Info>

@@ -1,0 +1,22 @@
+diff --git a/cJSON-1.7.18/Makefile b/cJSON-1.7.18/Makefile
+index 00ef807..6d1f93c 100644
+--- a/cJSON-1.7.18/Makefile
++++ b/cJSON-1.7.18/Makefile
+@@ -100,7 +100,7 @@ $(UTILS_STATIC): $(UTILS_OBJ)
+ $(CJSON_SHARED_VERSION): $(CJSON_OBJ)
+ 	$(CC) -shared -o $@ $< $(CJSON_SO_LDFLAG) $(LDFLAGS)
+ #cJSON_Utils
+-$(UTILS_SHARED_VERSION): $(UTILS_OBJ)
++$(UTILS_SHARED_VERSION): $(UTILS_OBJ) $(CJSON_SHARED_VERSION)
+ 	$(CC) -shared -o $@ $< $(CJSON_OBJ) $(UTILS_SO_LDFLAG) $(LDFLAGS)
+ 
+ #objects
+@@ -142,7 +142,7 @@ uninstall-cjson: uninstall-utils
+ 	$(RM) $(INSTALL_LIBRARY_PATH)/$(CJSON_SHARED_VERSION)
+ 	$(RM) $(INSTALL_LIBRARY_PATH)/$(CJSON_SHARED_SO)
+ 	$(RM) $(INSTALL_INCLUDE_PATH)/cJSON.h
+-	
++
+ #cJSON_Utils
+ uninstall-utils:
+ 	$(RM) $(INSTALL_LIBRARY_PATH)/$(UTILS_SHARED)

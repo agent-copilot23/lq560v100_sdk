@@ -1,0 +1,44 @@
+CUR_DIR=$(shell pwd)
+MAIN_DIR = $(CUR_DIR)/../../../../../
+include $(CUR_DIR)/../sample_cfg.mak
+
+CUR_SRCS := $(wildcard *.c)
+TARGET := $(CUR_SRCS:%.c=%)
+
+TARGET_PATH ?= $(PWD)
+
+# target source
+OBJS  := $(CUR_SRCS:%.c=%.o)
+
+CFLAGS += $(COMM_INC)
+CFLAGS += -I$(CUR_DIR)
+
+DEP_LIBS += $(SYS_LIBS)
+DEP_LIBS += $(VI_LIBS)
+DEP_LIBS += $(VPROC_LIBS)
+DEP_LIBS += $(VENC_LIBS)
+DEP_LIBS += $(REL_LIB)/libot_vo.a
+#DEP_LIBS += $(CUR_DIR)/libss_hdmi.a
+DEP_LIBS += $(MIPI_RX_LIBS)
+DEP_LIBS += $(MIPI_TX_LIBS)
+DEP_LIBS += $(OGE_LIBS)
+DEP_LIBS += $(LIBS_LD_CFLAGS)
+DEP_LIBS += $(SAMPLE_COMMON_LIB)
+
+
+.PHONY : clean all
+
+all: $(TARGET)
+
+$(TARGET):$(COMM_OBJ) $(OBJS)
+	$(CC) $(CFLAGS) -lpthread -lm -o $(TARGET_PATH)/$@ $^ -Wl,--start-group $(DEP_LIBS) $(SENSOR_LIBS) $(AUDIO_LIBA)  $(INIPARSER_LIB)  $(REL_LIB)/libsecurec.a -Wl,--end-group
+
+
+clean:
+	@rm -f $(TARGET_PATH)/$(TARGET)
+	@rm -f $(OBJS)
+	@rm -f $(COMM_OBJ)
+
+cleanstream:
+	@rm -f *.h264
+	@rm -f *.h265

@@ -1,0 +1,26 @@
+{
+    "vi_pipe0":
+    {
+        "sns_alg_def_file" :"./data/CMS/imx623_hj6158_A/sensor_alg_cfg.json",
+        "sns_awb_def_file" : "./data/CMS/imx623_hj6158_A/sensor_awb_cfg.json",
+        "sns_table_def_file" : "./data/CMS/imx623_hj6158_A/sensor_table_cfg.json"
+    },
+    "vi_pipe1":
+    {
+        "sns_alg_def_file" :"./data/CMS/imx623_hj6158_A/sensor_alg_cfg.json",
+        "sns_awb_def_file" : "./data/CMS/imx623_hj6158_A/sensor_awb_cfg.json",
+        "sns_table_def_file" : "./data/CMS/imx623_hj6158_A/sensor_table_cfg.json"
+    },
+    "vi_pipe2":
+    {
+        "sns_alg_def_file" :"./data/imx623/sensor_alg_cfg.json",
+        "sns_awb_def_file" : "./data/imx623/sensor_awb_cfg.json",
+        "sns_table_def_file" : "./data/imx623/sensor_table_cfg.json"
+    },
+    "vi_pipe3":
+    {
+        "sns_alg_def_file" :"./data/imx623/sensor_alg_cfg.json",
+        "sns_awb_def_file" : "./data/imx623/sensor_awb_cfg.json",
+        "sns_table_def_file" : "./data/imx623/sensor_table_cfg.json"
+    }
+}

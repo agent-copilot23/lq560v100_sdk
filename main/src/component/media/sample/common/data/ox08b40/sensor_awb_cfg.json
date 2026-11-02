@@ -1,0 +1,75 @@
+{
+    "ot_eis_vi_awb_sensor_default":
+    {
+        "g_awb_cmos":
+        {
+            "wb_ref_temp": 4950,
+            "gain_offset" : [384, 256, 256, 397],
+            "wb_para" : [85, 59, -112, 360, -50267, 9735822],
+            "golden_rgain": 0,
+            "golden_bgain": 0,
+            "sample_rgain": 0,
+            "sample_bgain": 0,
+            "agc_tbl":
+            {
+                "valid": 1,
+                "saturation": [128, 128, 128, 128, 124, 120, 116, 112, 108, 104, 100, 94, 90, 90, 90, 90]
+            },
+            "ccm":
+            {
+                "ccm_tab_num": 6,
+                "ccm_tab":
+                {
+                    "ccm_tab0":
+                    {
+                        "ccm_tab_color_temp":7500,
+                        "ccm_tab_color_ccm" : ["0x01B2",  "0x80A7",  "0x800B", "0x8049",  "0x0188",  "0x803F", "0x8003",  "0x80A7",  "0x1AA"]
+                    },
+                    "ccm_tab1":
+                    {
+                        "ccm_tab_color_temp":6500,
+                        "ccm_tab_color_ccm" : ["0x01B2",  "0x80A7",  "0x800B",  "0x8049",  "0x0188",  "0x803F", "0x8003",  "0x80A7",  "0x1AA"]
+                    },
+                    "ccm_tab2":
+                    {
+                        "ccm_tab_color_temp":5000,
+                        "ccm_tab_color_ccm" : ["0x01B2",  "0x80A7",  "0x800B", "0x8049",  "0x0188",  "0x803F", "0x8003",  "0x80A7",  "0x1AA"]
+                    },
+                    "ccm_tab3":
+                    {
+                        "ccm_tab_color_temp":4000,
+                        "ccm_tab_color_ccm" : ["0x1A4",  "0x8087",  "0x801D", "0x8048",  "0x18A",  "0x8042", "0x8009",  "0x80B5",  "0x1BE"]
+                    },
+                    "ccm_tab4":
+                    {
+                        "ccm_tab_color_temp":2856,
+                        "ccm_tab_color_ccm" : ["0x190",  "0x80A1",  "0x11", "0x8044",  "0x14D",  "0x8009", "0x4",  "0x80C1",  "0x1BD"]
+                    },
+                    "ccm_tab5":
+                    {
+                        "ccm_tab_color_temp":2300,
+                        "ccm_tab_color_ccm" : ["0x190",  "0x80A1",  "0x11", "0x8044",  "0x14D",  "0x8009", "0x4",  "0x80C1",  "0x1BD"]
+                    },
+                    "ccm_tab6":
+                    {
+                        "ccm_tab_color_temp":2300,
+                        "ccm_tab_color_ccm" : ["0x190",  "0x80A1",  "0x11", "0x8044",  "0x14D",  "0x8009", "0x4",  "0x80C1",  "0x1BD"]
+                    }
+                }
+            },
+            "init_rgain": 0,
+            "init_ggain": 0,
+            "init_bgain": 0,
+            "awb_run_interval":1,
+            "init_ccm" : [0, 0, 0, 0, 0],
+            "preawb_attr":
+            {
+                "preawb_attr_enable" : 1,
+                "preawb_attr_awb_reverse_en" : 0,
+                "preawb_attr_color_temp_array": [2300, 2800, 4000, 5000, 6500, 7500],
+                "preawb_attr_ratio_r_array" : [62540, 66746, 58660, 57689, 56597, 56117],
+                "preawb_attr_ratio_b_array" : [57189, 56415, 67433, 69254, 70972, 71073]
+            }
+        }
+    }
+}

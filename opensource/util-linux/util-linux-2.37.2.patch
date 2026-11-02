@@ -1,0 +1,755 @@
+diff --git a/bash-completion/su b/bash-completion/su
+index 3095050..913e445 100644
+--- a/bash-completion/su
++++ b/bash-completion/su
+@@ -41,7 +41,7 @@ _su_module()
+ 	esac
+ 	local IFS=$'\n'
+ 	compopt -o filenames
+-	COMPREPLY=( $(compgen -f -- $cur) )
++	COMPREPLY=( $(compgen -u -- $cur) )
+ 	return 0
+ }
+ complete -F _su_module su
+diff --git a/disk-utils/sfdisk.c b/disk-utils/sfdisk.c
+index 526d090..b08c945 100644
+--- a/disk-utils/sfdisk.c
++++ b/disk-utils/sfdisk.c
+@@ -1714,7 +1714,7 @@ static void refresh_prompt_buffer(struct sfdisk *sf, const char *devname,
+  */
+ static int command_fdisk(struct sfdisk *sf, int argc, char **argv)
+ {
+-	int rc = 0, partno = sf->partno, created = 0, unused = 0;
++	int rc = 0, partno = sf->partno, created = 0, unused = 0, ignored = 0;
+ 	struct fdisk_script *dp;
+ 	struct fdisk_table *tb = NULL;
+ 	const char *devname = NULL, *label;
+@@ -1897,6 +1897,7 @@ static int command_fdisk(struct sfdisk *sf, int argc, char **argv)
+ 			if (ignore_partition(pa)) {
+ 				fdisk_info(sf->cxt, _("Ignoring partition."));
+ 				next_partno++;
++				ignored++;
+ 				continue;
+ 			}
+ 			if (!created) {		/* create a new disklabel */
+@@ -1960,7 +1961,7 @@ static int command_fdisk(struct sfdisk *sf, int argc, char **argv)
+ 	/* create empty disk label if label, but no partition specified */
+ 	if ((rc == SFDISK_DONE_EOF || rc == SFDISK_DONE_WRITE) && created == 0
+ 	    && fdisk_script_has_force_label(dp) == 1
+-	    && fdisk_table_get_nents(tb) == 0
++	    && fdisk_table_get_nents(tb) == (size_t) ignored
+ 	    && fdisk_script_get_header(dp, "label")) {
+ 
+ 		int xrc = fdisk_apply_script_headers(sf->cxt, dp);
+diff --git a/include/strutils.h b/include/strutils.h
+index 6e95707..a84d295 100644
+--- a/include/strutils.h
++++ b/include/strutils.h
+@@ -106,8 +106,8 @@ static inline char *mem2strcpy(char *dest, const void *src, size_t n, size_t nma
+ 	if (n + 1 > nmax)
+ 		n = nmax - 1;
+ 
++	memset(dest, '\0', nmax);
+ 	memcpy(dest, src, n);
+-	dest[nmax-1] = '\0';
+ 	return dest;
+ }
+ 
+diff --git a/lib/blkdev.c b/lib/blkdev.c
+index c22853d..2d02fb8 100644
+--- a/lib/blkdev.c
++++ b/lib/blkdev.c
+@@ -222,8 +222,10 @@ int blkdev_get_sector_size(int fd __attribute__((__unused__)), int *sector_size)
+ #ifdef BLKPBSZGET
+ int blkdev_get_physector_size(int fd, int *sector_size)
+ {
+-	if (ioctl(fd, BLKPBSZGET, &sector_size) >= 0)
++	if (ioctl(fd, BLKPBSZGET, sector_size) >= 0)
++    {
+ 		return 0;
++    }
+ 	return -1;
+ }
+ #else
+diff --git a/libfdisk/src/ask.c b/libfdisk/src/ask.c
+index 31f95fb..274f6ba 100644
+--- a/libfdisk/src/ask.c
++++ b/libfdisk/src/ask.c
+@@ -36,6 +36,10 @@ int fdisk_set_ask(struct fdisk_context *cxt,
+ struct fdisk_ask *fdisk_new_ask(void)
+ {
+ 	struct fdisk_ask *ask = calloc(1, sizeof(struct fdisk_ask));
++
++	if (!ask)
++		return NULL;
++
+ 	DBG(ASK, ul_debugobj(ask, "alloc"));
+ 	ask->refcount = 1;
+ 	return ask;
+diff --git a/libfdisk/src/item.c b/libfdisk/src/item.c
+index 86fa0fb..671f9ad 100644
+--- a/libfdisk/src/item.c
++++ b/libfdisk/src/item.c
+@@ -40,6 +40,9 @@ struct fdisk_labelitem *fdisk_new_labelitem(void)
+ {
+ 	struct fdisk_labelitem *li = calloc(1, sizeof(*li));
+ 
++	if (!li)
++		return NULL;
++
+ 	li->refcount = 1;
+ 	DBG(ITEM, ul_debugobj(li, "alloc"));
+ 	return li;
+diff --git a/libfdisk/src/parttype.c b/libfdisk/src/parttype.c
+index 3a5db9c..271b671 100644
+--- a/libfdisk/src/parttype.c
++++ b/libfdisk/src/parttype.c
+@@ -26,6 +26,9 @@ struct fdisk_parttype *fdisk_new_parttype(void)
+ {
+ 	struct fdisk_parttype *t = calloc(1, sizeof(*t));
+ 
++	if (!t)
++		return NULL;
++
+ 	t->refcount = 1;
+ 	t->flags = FDISK_PARTTYPE_ALLOCATED;
+ 	DBG(PARTTYPE, ul_debugobj(t, "alloc"));
+diff --git a/libmount/src/context_umount.c b/libmount/src/context_umount.c
+index 173637a..773355f 100644
+--- a/libmount/src/context_umount.c
++++ b/libmount/src/context_umount.c
+@@ -453,10 +453,7 @@ static int is_fuse_usermount(struct libmnt_context *cxt, int *errsv)
+ 	struct libmnt_ns *ns_old;
+ 	const char *type = mnt_fs_get_fstype(cxt->fs);
+ 	const char *optstr;
+-	char *user_id = NULL;
+-	size_t sz;
+-	uid_t uid;
+-	char uidstr[sizeof(stringify_value(ULONG_MAX))];
++	uid_t uid, entry_uid;
+ 
+ 	*errsv = 0;
+ 
+@@ -474,10 +471,7 @@ static int is_fuse_usermount(struct libmnt_context *cxt, int *errsv)
+ 	if (!optstr)
+ 		return 0;
+ 
+-	if (mnt_optstr_get_option(optstr, "user_id", &user_id, &sz) != 0)
+-		return 0;
+-
+-	if (sz == 0 || user_id == NULL)
++	if (mnt_optstr_get_uid(optstr, "user_id", &entry_uid) != 0)
+ 		return 0;
+ 
+ 	/* get current user */
+@@ -494,8 +488,7 @@ static int is_fuse_usermount(struct libmnt_context *cxt, int *errsv)
+ 		return 0;
+ 	}
+ 
+-	snprintf(uidstr, sizeof(uidstr), "%lu", (unsigned long) uid);
+-	return strncmp(user_id, uidstr, sz) == 0;
++	return uid == entry_uid;
+ }
+ 
+ /*
+diff --git a/libmount/src/mountP.h b/libmount/src/mountP.h
+index d43a835..22442ec 100644
+--- a/libmount/src/mountP.h
++++ b/libmount/src/mountP.h
+@@ -399,6 +399,7 @@ extern const struct libmnt_optmap *mnt_optmap_get_entry(
+ 			     const struct libmnt_optmap **mapent);
+ 
+ /* optstr.c */
++extern int mnt_optstr_get_uid(const char *optstr, const char *name, uid_t *uid);
+ extern int mnt_optstr_remove_option_at(char **optstr, char *begin, char *end);
+ extern int mnt_optstr_fix_gid(char **optstr, char *value, size_t valsz, char **next);
+ extern int mnt_optstr_fix_uid(char **optstr, char *value, size_t valsz, char **next);
+diff --git a/libmount/src/optstr.c b/libmount/src/optstr.c
+index 921b931..16800f5 100644
+--- a/libmount/src/optstr.c
++++ b/libmount/src/optstr.c
+@@ -1076,6 +1076,48 @@ int mnt_optstr_fix_user(char **optstr)
+ 	return rc;
+ }
+ 
++/*
++ * Converts value from @optstr addressed by @name to uid.
++ *
++ * Returns: 0 on success, 1 if not found, <0 on error
++ */
++int mnt_optstr_get_uid(const char *optstr, const char *name, uid_t *uid)
++{
++	char *value = NULL;
++	size_t valsz = 0;
++	char buf[sizeof(stringify_value(UINT64_MAX))];
++	int rc;
++	uint64_t num;
++
++	assert(optstr);
++	assert(name);
++	assert(uid);
++
++	rc = mnt_optstr_get_option(optstr, name, &value, &valsz);
++	if (rc != 0)
++		goto fail;
++
++	if (valsz > sizeof(buf) - 1) {
++		rc = -ERANGE;
++		goto fail;
++	}
++	mem2strcpy(buf, value, valsz, sizeof(buf));
++
++	rc = ul_strtou64(buf, &num, 10);
++	if (rc != 0)
++		goto fail;
++	if (num > ULONG_MAX || (uid_t) num != num) {
++		rc = -ERANGE;
++		goto fail;
++	}
++	*uid = (uid_t) num;
++
++	return 0;
++fail:
++	DBG(UTILS, ul_debug("failed to convert '%s'= to number [rc=%d]", name, rc));
++	return rc;
++}
++
+ /**
+  * mnt_match_options:
+  * @optstr: options string
+diff --git a/libmount/src/tab_parse.c b/libmount/src/tab_parse.c
+index 917779a..4407f9c 100644
+--- a/libmount/src/tab_parse.c
++++ b/libmount/src/tab_parse.c
+@@ -227,11 +227,6 @@ static int mnt_parse_mountinfo_line(struct libmnt_fs *fs, const char *s)
+ 		goto fail;
+ 	}
+ 
+-	/* remove "\040(deleted)" suffix */
+-	p = (char *) endswith(fs->target, PATH_DELETED_SUFFIX);
+-	if (p && *p)
+-		*p = '\0';
+-
+ 	s = skip_separator(s);
+ 
+ 	/* (6) vfs options (fs-independent) */
+diff --git a/login-utils/Makemodule.am b/login-utils/Makemodule.am
+index 75c0a67..2d0547a 100644
+--- a/login-utils/Makemodule.am
++++ b/login-utils/Makemodule.am
+@@ -109,7 +109,7 @@ chfn_chsh_sources = \
+ 	login-utils/ch-common.c
+ chfn_chsh_cflags = $(SUID_CFLAGS) $(AM_CFLAGS)
+ chfn_chsh_ldflags = $(SUID_LDFLAGS) $(AM_LDFLAGS)
+-chfn_chsh_ldadd = libcommon.la $(READLINE_LIBS)
++chfn_chsh_ldadd = libcommon.la
+ 
+ if CHFN_CHSH_PASSWORD
+ chfn_chsh_ldadd += -lpam
+diff --git a/login-utils/chfn.c b/login-utils/chfn.c
+index 2508e14..8f00d15 100644
+--- a/login-utils/chfn.c
++++ b/login-utils/chfn.c
+@@ -56,11 +56,6 @@
+ # include "auth.h"
+ #endif
+ 
+-#ifdef HAVE_LIBREADLINE
+-# define _FUNCTION_DEF
+-# include <readline/readline.h>
+-#endif
+-
+ struct finfo {
+ 	char *full_name;
+ 	char *office;
+@@ -227,24 +222,22 @@ static char *ask_new_field(struct chfn_control *ctl, const char *question,
+ 			   char *def_val)
+ {
+ 	int len;
+-	char *buf;
+-#ifndef HAVE_LIBREADLINE
++	char *buf = NULL; /* leave initialized to NULL or getline segfaults */
+ 	size_t dummy = 0;
+-#endif
+ 
+ 	if (!def_val)
+ 		def_val = "";
++
+ 	while (true) {
+ 		printf("%s [%s]:", question, def_val);
+ 		__fpurge(stdin);
+-#ifdef HAVE_LIBREADLINE
+-		rl_bind_key('\t', rl_insert);
+-		if ((buf = readline(" ")) == NULL)
+-#else
++
+ 		putchar(' ');
++		fflush(stdout);
++
+ 		if (getline(&buf, &dummy, stdin) < 0)
+-#endif
+ 			errx(EXIT_FAILURE, _("Aborted."));
++
+ 		/* remove white spaces from string end */
+ 		ltrim_whitespace((unsigned char *) buf);
+ 		len = rtrim_whitespace((unsigned char *) buf);
+diff --git a/login-utils/chsh.c b/login-utils/chsh.c
+index 3497120..b7e7017 100644
+--- a/login-utils/chsh.c
++++ b/login-utils/chsh.c
+@@ -50,7 +50,6 @@
+ # include "selinux-utils.h"
+ #endif
+ 
+-
+ #ifdef HAVE_LIBUSER
+ # include <libuser/user.h>
+ # include "libuser.h"
+@@ -58,11 +57,6 @@
+ # include "auth.h"
+ #endif
+ 
+-#ifdef HAVE_LIBREADLINE
+-# define _FUNCTION_DEF
+-# include <readline/readline.h>
+-#endif
+-
+ struct sinfo {
+ 	char *username;
+ 	char *shell;
+@@ -121,33 +115,6 @@ static void print_shells(void)
+ 	endusershell();
+ }
+ 
+-#ifdef HAVE_LIBREADLINE
+-static char *shell_name_generator(const char *text, int state)
+-{
+-	static size_t len;
+-	char *s;
+-
+-	if (!state) {
+-		setusershell();
+-		len = strlen(text);
+-	}
+-
+-	while ((s = getusershell())) {
+-		if (strncmp(s, text, len) == 0)
+-			return xstrdup(s);
+-	}
+-	return NULL;
+-}
+-
+-static char **shell_name_completion(const char *text,
+-				    int start __attribute__((__unused__)),
+-				    int end __attribute__((__unused__)))
+-{
+-	rl_attempted_completion_over = 1;
+-	return rl_completion_matches(text, shell_name_generator);
+-}
+-#endif
+-
+ /*
+  *  parse_argv () --
+  *	parse the command line arguments, and fill in "pinfo" with any
+@@ -198,21 +165,18 @@ static char *ask_new_shell(char *question, char *oldshell)
+ {
+ 	int len;
+ 	char *ans = NULL;
+-#ifdef HAVE_LIBREADLINE
+-	rl_attempted_completion_function = shell_name_completion;
+-#else
+ 	size_t dummy = 0;
+-#endif
++
+ 	if (!oldshell)
+ 		oldshell = "";
+ 	printf("%s [%s]:", question, oldshell);
+-#ifdef HAVE_LIBREADLINE
+-	if ((ans = readline(" ")) == NULL)
+-#else
++
+ 	putchar(' ');
++	fflush(stdout);
++
+ 	if (getline(&ans, &dummy, stdin) < 0)
+-#endif
+ 		return NULL;
++
+ 	/* remove the newline at the end of ans. */
+ 	ltrim_whitespace((unsigned char *) ans);
+ 	len = rtrim_whitespace((unsigned char *) ans);
+diff --git a/login-utils/login.c b/login-utils/login.c
+index c6cd340..c9f6d59 100644
+--- a/login-utils/login.c
++++ b/login-utils/login.c
+@@ -513,6 +513,7 @@ static void init_tty(struct login_context *cxt)
+ {
+ 	struct stat st;
+ 	struct termios tt, ttt;
++	struct winsize ws;
+ 
+ 	cxt->tty_mode = (mode_t) getlogindefs_num("TTYPERM", TTY_MODE);
+ 
+@@ -543,6 +544,12 @@ static void init_tty(struct login_context *cxt)
+ 	}
+ #endif
+ 
++	/* The TTY size might be reset to 0x0 by the kernel when we close the stdin/stdout/stderr file
++	 * descriptors so let's save the size now so we can reapply it later */
++	memset(&ws, 0, sizeof(struct winsize));
++	if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) < 0)
++		syslog(LOG_WARNING, _("TIOCGWINSZ ioctl failed: %m"));
++
+ 	tcgetattr(0, &tt);
+ 	ttt = tt;
+ 	ttt.c_cflag &= ~HUPCL;
+@@ -574,6 +581,11 @@ static void init_tty(struct login_context *cxt)
+ 
+ 	/* restore tty modes */
+ 	tcsetattr(0, TCSAFLUSH, &tt);
++
++	/* Restore tty size */
++	if (ws.ws_row > 0 || ws.ws_col > 0)
++		if (ioctl(STDIN_FILENO, TIOCSWINSZ, &ws) < 0)
++			syslog(LOG_WARNING, _("TIOCSWINSZ ioctl failed: %m"));
+ }
+ 
+ /*
+@@ -662,7 +674,7 @@ static void log_lastlog(struct login_context *cxt)
+ 	sa.sa_handler = SIG_IGN;
+ 	sigaction(SIGXFSZ, &sa, &oldsa_xfsz);
+ 
+-	fd = open(_PATH_LASTLOG, O_RDWR, 0);
++	fd = open(_PATH_LASTLOG, O_RDWR | O_CREAT, 0);
+ 	if (fd < 0)
+ 		goto done;
+ 	offset = cxt->pwd->pw_uid * sizeof(ll);
+diff --git a/login-utils/vipw.c b/login-utils/vipw.c
+index f178c8f..bf76f51 100644
+--- a/login-utils/vipw.c
++++ b/login-utils/vipw.c
+@@ -353,6 +353,7 @@ int main(int argc, char *argv[])
+ 		 * which means they can be translated. */
+ 		printf(_("Would you like to edit %s now [y/n]? "), orig_file);
+ 
++		fflush(stdout);
+ 		if (fgets(response, sizeof(response), stdin) &&
+ 		    rpmatch(response) == RPMATCH_YES)
+ 			edit_file(1);
+diff --git a/misc-utils/logger.c b/misc-utils/logger.c
+index 5b122de..a29b9e4 100644
+--- a/misc-utils/logger.c
++++ b/misc-utils/logger.c
+@@ -973,11 +973,9 @@ static void logger_stdin(struct logger_ctl *ctl)
+ 	 * update header timestamps and to reflect possible priority changes.
+ 	 * The initial header is generated by logger_open().
+ 	 */
+-	int has_header = 1;
+ 	int default_priority = ctl->pri;
+ 	int last_pri = default_priority;
+-	size_t max_usrmsg_size = ctl->max_message_size - strlen(ctl->hdr);
+-	char *const buf = xmalloc(max_usrmsg_size + 2 + 2);
++	char *buf = xmalloc(ctl->max_message_size + 2 + 2);
+ 	int pri;
+ 	int c;
+ 	size_t i;
+@@ -997,34 +995,28 @@ static void logger_stdin(struct logger_ctl *ctl)
+ 			if (c == '>' && 0 <= pri && pri <= 191) {
+ 				/* valid RFC PRI values */
+ 				i = 0;
+-				if (pri < 8)	/* kern facility is forbidden */
+-					pri |= 8;
++				if ((pri & LOG_FACMASK) == 0)
++					pri |= (default_priority & LOG_FACMASK);
+ 				ctl->pri = pri;
+ 			} else
+ 				ctl->pri = default_priority;
+ 
+ 			if (ctl->pri != last_pri) {
+-				has_header = 0;
+-				max_usrmsg_size =
+-				    ctl->max_message_size - strlen(ctl->hdr);
++				generate_syslog_header(ctl);
+ 				last_pri = ctl->pri;
+ 			}
+ 			if (c != EOF && c != '\n')
+ 				c = getchar();
+ 		}
+ 
+-		while (c != EOF && c != '\n' && i < max_usrmsg_size) {
++		while (c != EOF && c != '\n' && i < ctl->max_message_size) {
+ 			buf[i++] = c;
+ 			c = getchar();
+ 		}
+ 		buf[i] = '\0';
+ 
+-		if (i > 0 || !ctl->skip_empty_lines) {
+-			if (!has_header)
+-				generate_syslog_header(ctl);
++		if (i > 0 || !ctl->skip_empty_lines)
+ 			write_output(ctl, buf);
+-			has_header = 0;
+-		}
+ 
+ 		if (c == '\n')	/* discard line terminator */
+ 			c = getchar();
+diff --git a/misc-utils/mcookie.c b/misc-utils/mcookie.c
+index 3157401..be5c34a 100644
+--- a/misc-utils/mcookie.c
++++ b/misc-utils/mcookie.c
+@@ -65,7 +65,7 @@ static uint64_t hash_file(struct mcookie_control *ctl, int fd)
+ 			rdsz = wanted - count;
+ 
+ 		r = read_all(fd, (char *) buf, rdsz);
+-		if (r < 0)
++		if (r <= 0)
+ 			break;
+ 		ul_MD5Update(&ctl->ctx, buf, r);
+ 		count += r;
+diff --git a/sys-utils/chcpu.c b/sys-utils/chcpu.c
+index c4e5bc7..527bce5 100644
+--- a/sys-utils/chcpu.c
++++ b/sys-utils/chcpu.c
+@@ -383,6 +383,7 @@ int main(int argc, char *argv[])
+ 		break;
+ 	}
+ 
++	CPU_FREE(cpu_set);
+ 	ul_unref_path(sys);
+ 
+ 	return rc == 0 ? EXIT_SUCCESS :
+diff --git a/sys-utils/unshare.c b/sys-utils/unshare.c
+index e5627d3..820691b 100644
+--- a/sys-utils/unshare.c
++++ b/sys-utils/unshare.c
+@@ -650,8 +650,11 @@ int main(int argc, char *argv[])
+ 		err(EXIT_FAILURE, _("cannot chdir to '%s'"), newdir);
+ 
+ 	if (procmnt) {
+-		if (!newroot && mount("none", procmnt, NULL, MS_PRIVATE|MS_REC, NULL) != 0)
+-			err(EXIT_FAILURE, _("cannot change %s filesystem propagation"), procmnt);
++		if (!newroot && mount("none", procmnt, NULL, MS_PRIVATE|MS_REC, NULL))
++			/* custom procmnt means that proc is very likely not mounted, causing EINVAL
++			   ignoring the error in this specific instance is safe */
++			if(errno != EINVAL)
++				err(EXIT_FAILURE, _("cannot change %s filesystem propagation"), procmnt);
+ 		if (mount("proc", procmnt, "proc", MS_NOSUID|MS_NOEXEC|MS_NODEV, NULL) != 0)
+ 			err(EXIT_FAILURE, _("mount %s failed"), procmnt);
+ 	}
+diff --git a/tests/expected/findmnt/filter-options b/tests/expected/findmnt/filter-options
+index 2606bce..97b0ead 100644
+--- a/tests/expected/findmnt/filter-options
++++ b/tests/expected/findmnt/filter-options
+@@ -28,5 +28,4 @@ TARGET                       SOURCE           FSTYPE                OPTIONS
+ /home/kzak/.gvfs             gvfs-fuse-daemon fuse.gvfs-fuse-daemon rw,nosuid,nodev,relatime,user_id=500,group_id=500
+ /var/lib/nfs/rpc_pipefs      sunrpc           rpc_pipefs            rw,relatime
+ /mnt/sounds                  //foo.home/bar/  cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-/mnt/foo                     /fooooo          bar                   rw,relatime
+ rc=0
+diff --git a/tests/expected/findmnt/filter-options-nameval-neg b/tests/expected/findmnt/filter-options-nameval-neg
+index 5471d65..f0467ef 100644
+--- a/tests/expected/findmnt/filter-options-nameval-neg
++++ b/tests/expected/findmnt/filter-options-nameval-neg
+@@ -29,6 +29,5 @@ TARGET                         SOURCE                FSTYPE                OPTIO
+ |-/home/kzak                   /dev/mapper/kzak-home ext4                  rw,noatime,barrier=1,data=ordered
+ | `-/home/kzak/.gvfs           gvfs-fuse-daemon      fuse.gvfs-fuse-daemon rw,nosuid,nodev,relatime,user_id=500,group_id=500
+ |-/var/lib/nfs/rpc_pipefs      sunrpc                rpc_pipefs            rw,relatime
+-|-/mnt/sounds                  //foo.home/bar/       cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-`-/mnt/foo                     /fooooo               bar                   rw,relatime
++`-/mnt/sounds                  //foo.home/bar/       cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+ rc=0
+diff --git a/tests/expected/findmnt/filter-types-neg b/tests/expected/findmnt/filter-types-neg
+index 2606bce..97b0ead 100644
+--- a/tests/expected/findmnt/filter-types-neg
++++ b/tests/expected/findmnt/filter-types-neg
+@@ -28,5 +28,4 @@ TARGET                       SOURCE           FSTYPE                OPTIONS
+ /home/kzak/.gvfs             gvfs-fuse-daemon fuse.gvfs-fuse-daemon rw,nosuid,nodev,relatime,user_id=500,group_id=500
+ /var/lib/nfs/rpc_pipefs      sunrpc           rpc_pipefs            rw,relatime
+ /mnt/sounds                  //foo.home/bar/  cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-/mnt/foo                     /fooooo          bar                   rw,relatime
+ rc=0
+diff --git a/tests/expected/findmnt/outputs-default b/tests/expected/findmnt/outputs-default
+index 5949579..0159935 100644
+--- a/tests/expected/findmnt/outputs-default
++++ b/tests/expected/findmnt/outputs-default
+@@ -30,6 +30,5 @@ TARGET                         SOURCE                FSTYPE                OPTIO
+ |-/home/kzak                   /dev/mapper/kzak-home ext4                  rw,noatime,barrier=1,data=ordered
+ | `-/home/kzak/.gvfs           gvfs-fuse-daemon      fuse.gvfs-fuse-daemon rw,nosuid,nodev,relatime,user_id=500,group_id=500
+ |-/var/lib/nfs/rpc_pipefs      sunrpc                rpc_pipefs            rw,relatime
+-|-/mnt/sounds                  //foo.home/bar/       cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-`-/mnt/foo                     /fooooo               bar                   rw,relatime
++`-/mnt/sounds                  //foo.home/bar/       cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+ rc=0
+diff --git a/tests/expected/findmnt/outputs-force-tree b/tests/expected/findmnt/outputs-force-tree
+index 5949579..0159935 100644
+--- a/tests/expected/findmnt/outputs-force-tree
++++ b/tests/expected/findmnt/outputs-force-tree
+@@ -30,6 +30,5 @@ TARGET                         SOURCE                FSTYPE                OPTIO
+ |-/home/kzak                   /dev/mapper/kzak-home ext4                  rw,noatime,barrier=1,data=ordered
+ | `-/home/kzak/.gvfs           gvfs-fuse-daemon      fuse.gvfs-fuse-daemon rw,nosuid,nodev,relatime,user_id=500,group_id=500
+ |-/var/lib/nfs/rpc_pipefs      sunrpc                rpc_pipefs            rw,relatime
+-|-/mnt/sounds                  //foo.home/bar/       cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-`-/mnt/foo                     /fooooo               bar                   rw,relatime
++`-/mnt/sounds                  //foo.home/bar/       cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+ rc=0
+diff --git a/tests/expected/findmnt/outputs-kernel b/tests/expected/findmnt/outputs-kernel
+index 5949579..0159935 100644
+--- a/tests/expected/findmnt/outputs-kernel
++++ b/tests/expected/findmnt/outputs-kernel
+@@ -30,6 +30,5 @@ TARGET                         SOURCE                FSTYPE                OPTIO
+ |-/home/kzak                   /dev/mapper/kzak-home ext4                  rw,noatime,barrier=1,data=ordered
+ | `-/home/kzak/.gvfs           gvfs-fuse-daemon      fuse.gvfs-fuse-daemon rw,nosuid,nodev,relatime,user_id=500,group_id=500
+ |-/var/lib/nfs/rpc_pipefs      sunrpc                rpc_pipefs            rw,relatime
+-|-/mnt/sounds                  //foo.home/bar/       cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-`-/mnt/foo                     /fooooo               bar                   rw,relatime
++`-/mnt/sounds                  //foo.home/bar/       cifs                  rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+ rc=0
+diff --git a/tests/expected/libmount/tabdiff-mount b/tests/expected/libmount/tabdiff-mount
+index 420aeac..3c18f8d 100644
+--- a/tests/expected/libmount/tabdiff-mount
++++ b/tests/expected/libmount/tabdiff-mount
+@@ -1,3 +1,2 @@
+ /dev/mapper/kzak-home on /home/kzak: MOUNTED
+-/fooooo on /mnt/foo: MOUNTED
+ tmpfs on /mnt/test/foobar: MOUNTED
+diff --git a/tests/expected/libmount/tabdiff-move b/tests/expected/libmount/tabdiff-move
+index 24f9bc7..95820d9 100644
+--- a/tests/expected/libmount/tabdiff-move
++++ b/tests/expected/libmount/tabdiff-move
+@@ -1,3 +1,2 @@
+ //foo.home/bar/ on /mnt/music: MOVED to /mnt/music
+-/fooooo on /mnt/foo: UMOUNTED
+ tmpfs on /mnt/test/foobar: UMOUNTED
+diff --git a/tests/expected/libmount/tabdiff-remount b/tests/expected/libmount/tabdiff-remount
+index 82ebeab..876bfd9 100644
+--- a/tests/expected/libmount/tabdiff-remount
++++ b/tests/expected/libmount/tabdiff-remount
+@@ -1,4 +1,3 @@
+ /dev/mapper/kzak-home on /home/kzak: REMOUNTED from 'rw,noatime,barrier=1,data=ordered' to 'ro,noatime,barrier=1,data=ordered'
+ //foo.home/bar/ on /mnt/sounds: REMOUNTED from 'rw,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344' to 'ro,relatime,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344'
+-/fooooo on /mnt/foo: UMOUNTED
+ tmpfs on /mnt/test/foobar: UMOUNTED
+diff --git a/tests/expected/libmount/tabdiff-umount b/tests/expected/libmount/tabdiff-umount
+index a3e0fe4..c7be725 100644
+--- a/tests/expected/libmount/tabdiff-umount
++++ b/tests/expected/libmount/tabdiff-umount
+@@ -1,3 +1,2 @@
+ /dev/mapper/kzak-home on /home/kzak: UMOUNTED
+-/fooooo on /mnt/foo: UMOUNTED
+ tmpfs on /mnt/test/foobar: UMOUNTED
+diff --git a/tests/expected/libmount/tabfiles-parse-mountinfo b/tests/expected/libmount/tabfiles-parse-mountinfo
+index 47eb770..d5ba524 100644
+--- a/tests/expected/libmount/tabfiles-parse-mountinfo
++++ b/tests/expected/libmount/tabfiles-parse-mountinfo
+@@ -351,17 +351,6 @@ id:     47
+ parent: 20
+ devno:  0:38
+ ------ fs:
+-source: /fooooo
+-target: /mnt/foo
+-fstype: bar
+-optstr: rw,relatime
+-VFS-optstr: rw,relatime
+-FS-opstr: rw
+-root:   /
+-id:     48
+-parent: 20
+-devno:  0:39
+------- fs:
+ source: tmpfs
+ target: /mnt/test/foobar
+ fstype: tmpfs
+diff --git a/tests/expected/libmount/tabfiles-py-parse-mountinfo b/tests/expected/libmount/tabfiles-py-parse-mountinfo
+index 47eb770..d5ba524 100644
+--- a/tests/expected/libmount/tabfiles-py-parse-mountinfo
++++ b/tests/expected/libmount/tabfiles-py-parse-mountinfo
+@@ -351,17 +351,6 @@ id:     47
+ parent: 20
+ devno:  0:38
+ ------ fs:
+-source: /fooooo
+-target: /mnt/foo
+-fstype: bar
+-optstr: rw,relatime
+-VFS-optstr: rw,relatime
+-FS-opstr: rw
+-root:   /
+-id:     48
+-parent: 20
+-devno:  0:39
+------- fs:
+ source: tmpfs
+ target: /mnt/test/foobar
+ fstype: tmpfs
+diff --git a/tests/ts/findmnt/files/mountinfo b/tests/ts/findmnt/files/mountinfo
+index 475ea1a..ff1e664 100644
+--- a/tests/ts/findmnt/files/mountinfo
++++ b/tests/ts/findmnt/files/mountinfo
+@@ -30,4 +30,3 @@
+ 44 41 0:36 / /home/kzak/.gvfs rw,nosuid,nodev,relatime - fuse.gvfs-fuse-daemon gvfs-fuse-daemon rw,user_id=500,group_id=500
+ 45 20 0:37 / /var/lib/nfs/rpc_pipefs rw,relatime - rpc_pipefs sunrpc rw
+ 47 20 0:38 / /mnt/sounds rw,relatime - cifs //foo.home/bar/ rw,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-48 20 0:39 / /mnt/foo\040(deleted) rw,relatime - bar /fooooo rw
+diff --git a/tests/ts/findmnt/files/mountinfo-nonroot b/tests/ts/findmnt/files/mountinfo-nonroot
+index e15b467..87b421d 100644
+--- a/tests/ts/findmnt/files/mountinfo-nonroot
++++ b/tests/ts/findmnt/files/mountinfo-nonroot
+@@ -29,4 +29,3 @@
+ 44 41 0:36 / /home/kzak/.gvfs rw,nosuid,nodev,relatime - fuse.gvfs-fuse-daemon gvfs-fuse-daemon rw,user_id=500,group_id=500
+ 45 20 0:37 / /var/lib/nfs/rpc_pipefs rw,relatime - rpc_pipefs sunrpc rw
+ 47 20 0:38 / /mnt/sounds rw,relatime - cifs //foo.home/bar/ rw,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-48 20 0:39 / /mnt/foo\040(deleted) rw,relatime - bar /fooooo rw
+diff --git a/tests/ts/libmount/files/mountinfo b/tests/ts/libmount/files/mountinfo
+index c063071..2b01740 100644
+--- a/tests/ts/libmount/files/mountinfo
++++ b/tests/ts/libmount/files/mountinfo
+@@ -30,5 +30,4 @@
+ 44 41 0:36 / /home/kzak/.gvfs rw,nosuid,nodev,relatime - fuse.gvfs-fuse-daemon gvfs-fuse-daemon rw,user_id=500,group_id=500
+ 45 20 0:37 / /var/lib/nfs/rpc_pipefs rw,relatime - rpc_pipefs sunrpc rw
+ 47 20 0:38 / /mnt/sounds rw,relatime - cifs //foo.home/bar/ rw,unc=\\foo.home\bar,username=kzak,domain=SRGROUP,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.111.1,posixpaths,serverino,acl,rsize=16384,wsize=57344
+-48 20 0:39 / /mnt/foo\040(deleted) rw,relatime - bar /fooooo rw
+ 49 20 0:56 / /mnt/test/foobar rw,relatime shared:323 - tmpfs tmpfs rw
+diff --git a/tests/ts/lsns/ioctl_ns b/tests/ts/lsns/ioctl_ns
+index ef63606..a979893 100755
+--- a/tests/ts/lsns/ioctl_ns
++++ b/tests/ts/lsns/ioctl_ns
+@@ -21,7 +21,7 @@ TS_DESC="ownership and hierarchy"
+ . $TS_TOPDIR/functions.sh
+ ts_init "$*"
+ 
+-# ts_skip_nonroot
++ts_skip_nonroot
+ grep -q '#define HAVE_LINUX_NSFS_H' ${top_builddir}/config.h || ts_skip "no ioctl_ns support"
+ 
+ [ -r /proc/self/ns/user ] || ts_skip "no USER namespace kernel support"
+diff --git a/tests/ts/misc/setarch b/tests/ts/misc/setarch
+index 6c872bf..99e068c 100755
+--- a/tests/ts/misc/setarch
++++ b/tests/ts/misc/setarch
+@@ -77,7 +77,12 @@ ts_finalize_subtest "$finmsg"
+ # conditional subtest
+ if [ "$uname26_seems_supported" = "yes" ]; then
+ ts_init_subtest uname26-version
+-	tmp=$($TS_CMD_SETARCH $ARCH --uname-2.6 uname -r)
++	rpm -qa | grep -q "uname-build-checks"
++	if [ $? -eq 0 ]; then
++		tmp=$($TS_CMD_SETARCH $ARCH --uname-2.6 uname.bin -r)
++	else
++		tmp=$($TS_CMD_SETARCH $ARCH --uname-2.6 uname -r)
++	fi
+ 	if echo "$tmp" | grep -q "^2\.6\."; then
+ 		echo "kernel version changed to 2.6" >> $TS_OUTPUT
+ 	else
+diff --git a/text-utils/column.c b/text-utils/column.c
+index 1bc90e8..f9878e4 100644
+--- a/text-utils/column.c
++++ b/text-utils/column.c
+@@ -814,6 +814,8 @@ int main(int argc, char **argv)
+ 		case 's':
+ 			free(ctl.input_separator);
+ 			ctl.input_separator = mbs_to_wcs(optarg);
++			if (!ctl.input_separator)
++				err(EXIT_FAILURE, _("failed to use input separator"));
+ 			ctl.greedy = 0;
+ 			break;
+ 		case 'T':

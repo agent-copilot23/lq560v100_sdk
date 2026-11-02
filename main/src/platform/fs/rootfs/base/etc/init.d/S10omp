@@ -1,0 +1,8 @@
+if [ -e /ompmod/load_lq560v100_quickboot_stage_1 ];then
+    cd /ompmod/
+    ./load_lq560v100_quickboot_stage_1 -i
+fi
+##quickboot sample
+if [ -e /usr/bin/sample_quickboot ];then
+    /usr/bin/sample_quickboot 0 &
+fi

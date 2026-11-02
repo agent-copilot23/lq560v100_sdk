@@ -1,0 +1,174 @@
+#!/bin/sh
+##spi/mmc
+bootmedia=""
+
+mount_device=""
+mount_device_num=""
+mount_opts=""
+mount_need_format=""
+mount_fs_type=""
+
+user_ubifs_opts="rw,bulk_read"
+user_ext4fs_opts="ro,data=writeback,errors=remount-ro,noatime"
+user_jffs2_opts="ro,noatime"
+data_ubifs_opts="rw,bulk_read"
+data_ext4fs_opts="rw,data=writeback,errors=remount-ro,noatime"
+data_jffs2_opts="rw,noatime"
+user_mount_dir=/opt
+data_mount_dir=/data
+user_device_num=""
+user_device_path=""
+data_device_num=""
+data_device_path=""
+export PATH=$PATH:/opt/bin
+
+ab_suffix=""
+ubi_dev_num=0
+
+#args: origin_device_path  partition_name
+function ln_not_exist()
+{
+    path=$1
+    part_name=$2
+    mkdir -p /dev/by-name/
+    if [ ! -e "/dev/by-name/$part_name" ];then
+        ln -s $path "/dev/by-name/$part_name"
+    fi
+}
+
+#args: partition_name
+function get_mount_info()
+{
+    part=$1
+    ## mmc base is 1; mtd base is 0.
+    device_num=0
+    device_name_base=""
+
+    ##get_bootmedia_and_absuffix
+    if [ "$bootmedia" != "" ];then
+        return
+    fi
+    cmdline=$(cat /proc/cmdline)
+
+    if [[ "$cmdline" == *"mmc"* ]];then
+        bootmedia="mmc"
+    else
+        if [[ "$cmdline" == *"nand"* ]];then
+            bootmedia="nand"
+        else
+            bootmedia="spi"
+        fi
+    fi
+    ab_suffix="_$(echo "$cmdline" | sed 's/.*boot_slot_name=\([a|b|c]*\).*/\1/g')"
+    if [ $ab_suffix == "_" ];then
+        ab_suffix=""
+    fi
+    case $bootmedia in
+        "mmc")
+            device_num=1
+            device_name_base="/dev/mmcblk0p"
+            ;;
+        "spi")
+            device_name_base="/dev/mtdblock"
+            ;;
+        "nand")
+            device_name_base="/dev/mtdblock"
+            ;;
+    esac
+
+    parts=$(sed 's/.*parts=[^:]*:\([^ ]*\).*/\1/' /proc/cmdline | sed 's/,/ /g')
+    for p in $parts;do
+        device_path="$device_name_base""$device_num"
+        p=$(echo $p | sed 's/.*(\(.*\))/\1/g')
+        ln_not_exist $device_path $p
+
+        if [[ "$p" == *"rootfs$ab_suffix"* ]];then
+            ln_not_exist $device_path "rootfs"
+        fi
+        if [[ "$p" == *"userfs$ab_suffix"* ]];then
+            ln_not_exist $device_path "userfs"
+            user_device_num=$device_num
+            user_device_path=$device_path
+        fi
+        if [[ "$p" == *"data"* ]];then
+            data_device_num=$device_num
+            data_device_path=$device_path
+            ln_not_exist $device_path "data"
+        fi
+        device_num=$(expr $device_num + 1)
+    done
+}
+
+#args: partition_name mount_dir
+function do_mount()
+{
+    part=$1
+    mount_dir="$2"
+    mount_device="dev/"$part
+    if [ "$part" == "data" ];then
+        is_data_part="yes"
+    fi
+
+    case $bootmedia in
+        "mmc")
+            mount_fs_type="ext4"
+            mount_opts=$user_ext4fs_opts
+            mount_device=$user_device_path
+            if [ "$is_data_part" == "yes" ];then
+                mount_opts=$data_ext4fs_opts
+                mount_device=$data_device_path
+            fi
+            mount -t $mount_fs_type $mount_device $mount_dir -o $mount_opts
+            if [ $? != 0 ] &&  [ "$is_data_part" == "yes" ] ; then
+                mkfs.ext4 -F $mount_device
+                mount -t $mount_fs_type $mount_device $mount_dir -o $mount_opts
+            fi
+            ;;
+        "nand")
+            mount_fs_type="ubifs"
+            mount_opts=$user_ubifs_opts
+            device_num=$user_device_num
+            if [ "$is_data_part" == "yes" ];then
+                mount_opts=$data_ubifs_opts
+                device_num=$data_device_num
+            fi
+            ubiattach -m $device_num  -d $ubi_dev_num /dev/ubi_ctrl
+            mount -t $mount_fs_type /dev/ubi"$ubi_dev_num"_0 $mount_dir -o $mount_opts
+            if [ $? != 0 ] &&  [ "$is_data_part" == "yes" ]; then
+                ubidetach -d $ubi_dev_num
+                ubiformat  "/dev/mtd"$device_num -y
+                ubiattach -m $device_num  -d $ubi_dev_num /dev/ubi_ctrl
+                ubimkvol /dev/ubi"$ubi_dev_num" -N  $part -m
+                mount -t $mount_fs_type /dev/ubi"$ubi_dev_num"_0 $mount_dir -o $mount_opts
+            fi
+            ##update ubi_dev_num
+            ubi_dev_num=$(expr $ubi_dev_num + 1)
+            ;;
+        "spi")
+            mount_opts=$user_jffs2_opts
+            mount_fs_type="jffs2"
+            mount_device=$user_device_path
+            if [ "$is_data_part" == "yes" ];then
+                mount_opts=$data_jffs2_opts
+                mount_device=$data_device_path
+            fi
+
+            mount -t $mount_fs_type $mount_device $mount_dir -o $mount_opts
+            if [ $? != 0 ] &&  [ "$is_data_part" == "yes" ] ; then
+                flash_erase -j $mount_device 0 0
+                mount -t $mount_fs_type $mount_device $mount_dir -o $mount_opts
+            fi
+            ;;
+    esac
+}
+
+get_mount_info "userfs"
+do_mount "userfs" $user_mount_dir
+
+get_mount_info "data"
+do_mount "data" $data_mount_dir
+
+if [ -e $user_mount_dir/user_init.sh ];then
+    cd $user_mount_dir/
+    ./user_init.sh
+fi

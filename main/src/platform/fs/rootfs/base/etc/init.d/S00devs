@@ -1,0 +1,5 @@
+#!/bin/sh
+
+mknod /dev/ttyS000 c 204 64
+
+

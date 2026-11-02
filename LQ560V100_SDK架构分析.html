@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LQ560V100 SDK 架构总览（SD3589C_SDK 深度分析）</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif; background:#f5f7fa; color:#22303f; line-height:1.5; padding:24px 16px; }
+  .wrap { max-width:1240px; margin:0 auto; }
+  header.top { background:linear-gradient(135deg,#16324f 0%,#1e4a72 100%); color:#fff; border-radius:12px; padding:20px 24px; margin-bottom:18px; }
+  header.top h1 { font-size:22px; font-weight:700; }
+  header.top .sub { font-size:13px; opacity:.85; margin-top:6px; }
+  .sec { background:#fff; border:1px solid #e3e9f0; border-radius:12px; padding:16px 18px; margin-bottom:16px; }
+  .sec h2 { font-size:16px; color:#16324f; border-left:4px solid #1e6fba; padding-left:10px; margin-bottom:12px; }
+  .sec h2 .tag { float:right; font-size:12px; font-weight:400; color:#5b7289; }
+  .grid { display:flex; flex-wrap:wrap; gap:10px; }
+  .card { background:#f8fafc; border:1px solid #e3e9f0; border-radius:8px; padding:10px 12px; }
+  .flow { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+  .flow .node { background:#eef4fb; border:1px solid #bcd2e8; border-radius:6px; padding:6px 10px; font-size:13px; text-align:center; min-width:64px; }
+  .flow .node b { display:block; font-size:13px; color:#16324f; }
+  .flow .node small { font-size:11px; color:#5b7289; }
+  .arrow { color:#8aa4c0; font-size:16px; font-weight:700; }
+  .chip { flex:1 1 200px; }
+  .chip .name { font-weight:700; color:#16324f; font-size:14px; }
+  .chip .spec { font-size:12px; color:#5b7289; margin-top:4px; }
+  .chip.hl { border:1.5px solid #1e6fba; background:#eef6ff; }
+  .mods { display:flex; flex-wrap:wrap; gap:6px; }
+  .mod { font-size:12px; padding:3px 8px; border-radius:12px; border:1px solid; background:#fff; white-space:nowrap; }
+  .c-base { color:#1e6fba; border-color:#9cc2ea; }
+  .c-in { color:#0e7c6b; border-color:#8fd0c0; }
+  .c-proc { color:#b05b12; border-color:#e5bc8c; }
+  .c-codec { color:#7a4fb0; border-color:#c9b3e5; }
+  .c-ai { color:#b03060; border-color:#e5a3bd; }
+  .c-ao { color:#3a7d44; border-color:#a3d1a8; }
+  .c-sec { color:#b03030; border-color:#e5a3a3; }
+  .c-misc { color:#5b7289; border-color:#b9c5d1; }
+  .pipe { display:flex; flex-wrap:wrap; align-items:stretch; gap:0; }
+  .pipe .st { flex:1 1 120px; background:#f2f6fb; border:1px solid #c9d8ea; border-radius:6px; padding:8px 8px; text-align:center; position:relative; margin-right:-1px; }
+  .pipe .st b { font-size:13px; color:#16324f; display:block; }
+  .pipe .st small { font-size:11px; color:#5b7289; }
+  .pipe .st.ai { background:#fdf0f5; border-color:#e8b6c9; }
+  .pipe .st.enc { background:#f6f1fc; border-color:#d0bceb; }
+  .pipe .st.out { background:#f1faf2; border-color:#a9d3ae; }
+  .pipe .st.sec { background:#fdf3f3; border-color:#e8b6b6; }
+  table.tbl { width:100%; border-collapse:collapse; font-size:13px; }
+  table.tbl th { background:#eef3f9; color:#16324f; text-align:left; padding:6px 10px; border:1px solid #dfe7f0; }
+  table.tbl td { padding:6px 10px; border:1px solid #dfe7f0; vertical-align:top; }
+  .note { font-size:12px; color:#b05b12; background:#fdf6ec; border:1px solid #efd9bd; border-radius:6px; padding:8px 10px; margin-top:10px; }
+  .cols3 { display:flex; flex-wrap:wrap; gap:14px; }
+  .cols3 > div { flex:1 1 300px; }
+  .ul { list-style:none; }
+  .ul li { font-size:13px; padding:3px 0 3px 14px; position:relative; }
+  .ul li:before { content:"▸"; position:absolute; left:0; color:#1e6fba; }
+  .ul b { color:#16324f; }
+  .legend { display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; font-size:12px; color:#5b7289; }
+  .legend span { display:inline-flex; align-items:center; gap:4px; }
+  .sw { display:inline-block; width:12px; height:12px; border-radius:3px; border:1px solid #c0ccd8; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>LQ560V100 SDK 架构总览</h1>
+  <div class="sub">来源：SD3589C_SDK_V100R001C00SPC001 / lq560v100_sdk（1496 个文件，约 614 MB）· 定位：车载/安防级 IPC SoC 嵌入式 Linux SDK · 本图依据 SDK 内 Makefile/配置/脚本/目录实际内容绘制（示意）</div>
+</header>
+
+<!-- 1 芯片与产品定位 -->
+<div class="sec">
+  <h2>1｜芯片家族与产品定位 <span class="tag">cfg.mak + platform/Makefile</span></h2>
+  <div class="grid">
+    <div class="card chip hl">
+      <div class="name">lq560plusv100（默认）</div>
+      <div class="spec">Cortex-A55 @ 1GHz · LPDDR4-2933 2GB 32bit · 6L 板</div>
+    </div>
+    <div class="card chip">
+      <div class="name">lq560miniv100</div>
+      <div class="spec">与 plus 共用同一 regbin（LPDDR4-2933 2GB）</div>
+    </div>
+    <div class="card chip">
+      <div class="name">lq560litev100</div>
+      <div class="spec">与 plus 共用同一 regbin（LPDDR4-2933 2GB）</div>
+    </div>
+    <div class="card chip">
+      <div class="name">lq560tinyv100</div>
+      <div class="spec">Cortex-A55 @ 850MHz · LPDDR4-2400 2GB 32bit</div>
+    </div>
+  </div>
+  <div class="legend" style="margin-top:10px;">
+    <span><i class="sw" style="background:#eef6ff;border-color:#1e6fba;"></i>ARMv8-A 64位（aarch64）· Linux 5.10.y 单核OS方案</span>
+    <span><i class="sw" style="background:#f8fafc;"></i>启动介质：SPI NAND/NOR（当前默认）或 eMMC</span>
+    <span><i class="sw" style="background:#fdf3f3;"></i>目标场景：车载环视/前视/舱内摄像头、IPC、车载显示</span>
+  </div>
+</div>
+
+<!-- 2 构建系统与镜像产出 -->
+<div class="sec">
+  <h2>2｜构建系统：一条命令产出全镜像 <span class="tag">build.sh → Makefile 任务链 task0~16</span></h2>
+  <div class="flow">
+    <div class="node"><b>build.sh</b><small>解析参数/env</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>build_com.sh</b><small>set_com_var</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>make all -j16</b><small>cfg.mak 选 CHIP</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>platform 层</b><small>OTFL→ATF→U-Boot→Kernel</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>组件层 component</b><small>smr/media/security/upgrade…</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>文件系统</b><small>rootfs/userfs/datafs</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>image_tool 打包</b><small>oem_quick_build*.py</small></div>
+  </div>
+  <table class="tbl" style="margin-top:12px;">
+    <tr><th style="width:140px;">镜像产物</th><th>内容 / 用途</th></tr>
+    <tr><td>otfl_*.img</td><td>一级引导 OTFL（DDR/PMIC/TZASC 初始化 + 校验加载），按 spinand/spinor/emmc 分</td></tr>
+    <tr><td>uboot_*.img · bl31.img</td><td>U-Boot 2022.07 + ATF 2.7（secure world），可开安全启动签名</td></tr>
+    <tr><td>uImage-fdt.gz.img</td><td>Linux 5.10.y 内核 + 设备树（内核态媒体驱动以 .ko 形式独立发布）</td></tr>
+    <tr><td>rootfs_*.ramdisk.img</td><td>genromfs 只读根文件系统（BusyBox 1.34.1 + init）</td></tr>
+    <tr><td>userfs（96M ext4 / 32M ubifs / jffs2）</td><td>可写用户分区：媒体 .so、模型、加载脚本 load_lq560v100</td></tr>
+    <tr><td>datafs（~7.8G ext4 / 27M ubifs）</td><td>数据分区（录像/日志/配置）</td></tr>
+    <tr><td>emmc_/nand_/nor_upgrade.zip</td><td>升级包（含 burn_table 分区表），安全启动时附加 .sig 签名</td></tr>
+  </table>
+  <div class="note">⚠ 关键开关：BOOT_MEDIA(spi/emmc) · BOOT_MODE(normal/ab=A/B双区升级) · SECUREBOOT_TYPE(sm=国密/ecc) · SECUREBOOT_ENC(y/n) · QUICKBOOT_BUILD(y=两阶段快速启动)。工具链固定要求 aarch64-otv02-linux-gnu ver100.140，版本不符会交互提示。</div>
+</div>
+
+<!-- 3 启动链 -->
+<div class="sec">
+  <h2>3｜启动链：OTFL → ATF → U-Boot → Linux → 应用 <span class="tag">main/src/boot/otfl + platform</span></h2>
+  <div class="flow">
+    <div class="node" style="background:#fdf3f3;border-color:#e8b6b6;"><b>OTFL</b><small>DDR init · PMIC(pf8x) · TZASC · OTP · SPI/eMMC · SVB</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>ATF bl31</b><small>ARM Trusted Firmware 2.7</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>U-Boot 2022.07</b><small>安全启动校验 · 分区 env · 引导内核</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>Linux 5.10</b><small>uImage-fdt @0x40030000</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>rootfs.ramdisk</b><small>busybox init · 挂载 userfs/datafs</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>load_lq560v100</b><small>insmod 约50个 .ko</small></div>
+    <span class="arrow">→</span>
+    <div class="node"><b>sample / 业务 App</b><small>vi→isp→venc 拉流</small></div>
+  </div>
+  <div class="grid" style="margin-top:12px;">
+    <div class="card" style="flex:1 1 45%;">
+      <b style="color:#16324f;">DDR 内存布局（1GB 物理）</b>
+      <table class="tbl" style="margin-top:6px;">
+        <tr><td>0x40000000</td><td>FDT &amp; ATF 区（192K）</td></tr>
+        <tr><td>0x40030000</td><td>内核 + OS（约 130M）</td></tr>
+        <tr><td>0x48200000 起</td><td>SMR 安全内存区 894M（ot_smr.ko 独占）</td></tr>
+      </table>
+    </div>
+    <div class="card" style="flex:1 1 45%;">
+      <b style="color:#16324f;">快速启动（QuickBoot）</b>
+      <div class="ul">
+        <li>QUICKBOOT_BUILD=y 时 rootfs 内置 sample_quickboot</li>
+        <li>KO 分两阶段加载：stage_1（先出图所需模块）→ stage_2（其余模块）</li>
+        <li>对应 load_lq560v100_quickboot_stage_1/2 两个脚本</li>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 内核模块栈 -->
+<div class="sec">
+  <h2>4｜内核驱动栈：按加载顺序约 50 个 KO（load_lq560v100）</h2>
+  <p style="font-size:13px;color:#5b7289;margin-bottom:8px;">颜色＝职责分组：蓝=基础框架 · 绿=视频输入/ISP · 橙=视频处理/输出 · 紫=编解码 · 红=AI/安全</p>
+  <div class="mods">
+    <span class="mod c-base">sys_config.ko（sensor/board/vo_intf 参数）</span>
+    <span class="mod c-base">ot_osal.ko（OS抽象层）</span>
+    <span class="mod c-base">ot_smr.ko（894M内存隔离）</span>
+    <span class="mod c-base">ot_base / ot_vrb（环形缓冲）/ ot_vca / ot_sys</span>
+    <span class="mod c-in">ot_mipi_rx</span>
+    <span class="mod c-in">ot_sensor_i2c</span>
+    <span class="mod c-in">ot_vi（视频输入）</span>
+    <span class="mod c-in">ot_isp（ISP_V2）</span>
+    <span class="mod c-proc">ot_vproc（缩放/裁剪/旋转）</span>
+    <span class="mod c-proc">ot_vo_dev / ot_vo（显示输出）</span>
+    <span class="mod c-proc">ot_dis / ot_gdc（畸变校正）/ ot_vpp / ot_vgs / ot_rgn（OSD）</span>
+    <span class="mod c-proc">ot_oge（图形引擎）/ ot_gfb（帧缓冲）/ ot_chnl</span>
+    <span class="mod c-codec">ot_vfmw · ot_rc · ot_venc · ot_venc_svr</span>
+    <span class="mod c-codec">ot_h264e · ot_h265e · ot_jpege · ot_jpegd · ot_vdec</span>
+    <span class="mod c-ai">ot_cve（视觉引擎）</span>
+    <span class="mod c-ai">ot_avp_npu（NPU）</span>
+    <span class="mod c-ai">ot_avp_dpu_rect / ot_avp_dpu_match（AI前后处理）</span>
+    <span class="mod c-ao">ot_aio · ot_ao · ot_acodec · ot_tlv320aic3101（音频）</span>
+    <span class="mod c-sec">ot_cipher（加解密）· ot_km（密钥）· ot_otp · ot_pm</span>
+    <span class="mod c-misc">ot_vi_res_mng / ot_vproc_res_mng / ot_vo_res_mng</span>
+    <span class="mod c-misc">ot_adc · ot_wdg（看门狗）· ot_proc</span>
+    <span class="mod c-misc">ot_mipi_tx（MIPI 出图 / SerDes→LVDS）</span>
+  </div>
+</div>
+
+<!-- 5 媒体数据管线 -->
+<div class="sec">
+  <h2>5｜媒体数据管线：Sensor → ISP → 编码/显示/AI <span class="tag">sample：sample_vi / sample_venc / sample_media_pipe</span></h2>
+  <div class="pipe">
+    <div class="st"><b>Sensor ×4路</b><small>OS04A10(默认)/IMX623/OS08A20/OX03C/GC2093/SC220AT…<br>MIPI · WDR2to1</small></div>
+    <div class="st"><b>VI 视频输入</b><small>ot_vi · ot_mipi_rx<br>3A统计</small></div>
+    <div class="st"><b>ISP V2</b><small>AE/AWB/BNR/DRC/LDCI/去雾/ACS<br>libot_isp · libot_ae · libot_awb…</small></div>
+    <div class="st"><b>VPROC</b><small>缩放/裁剪/ROI/多路输出<br>GDC 畸变校正（AVM鱼眼）</small></div>
+    <div class="st enc"><b>VENC</b><small>H.264/H.265/JPEG<br>ot_venc + ot_rc 码控</small></div>
+    <div class="st out"><b>码流输出</b><small>RTSP/存储<br>（业务App侧）</small></div>
+    <div class="st ai"><b>NPU</b><small>YOLOv5s / MobileNetV2<br>.ortm 模型 · ot_avp_npu</small></div>
+    <div class="st ai"><b>CVE/DPU</b><small>检测/匹配/矩形<br>AI 结果叠加OSD</small></div>
+  </div>
+  <div class="flow" style="margin-top:12px;">
+    <div class="node"><b>显示输出 VO</b><small>BT1120 · BT656 · MIPI TX · RGB6/8/16/18/24bit</small></div>
+    <span class="arrow">↔</span>
+    <div class="node"><b>SerDes 链路</b><small>vi_serdes / vo_serdes：MIPI→LVDS（长距离车载）</small></div>
+    <span class="arrow">↔</span>
+    <div class="node"><b>触控屏</b><small>cyttsp5 / goodix（舱内显示交互）</small></div>
+    <span class="arrow">·</span>
+    <div class="node"><b>音频</b><small>内建 ACODEC 或外部 ES8388 · ot_aio/ot_ao</small></div>
+  </div>
+  <div class="note">⚠ 图像质量依赖 JSON 参数体系：sensor_alg_cfg.json / sensor_awb_cfg.json / sensor_tuning_cfg.json / 场景配置 config_product_scene_*.ini；3A 与场景自动曝光由 libot_scene_auto 按场景切换。</div>
+</div>
+
+<!-- 6 上层组件 / 样例 / 工具 -->
+<div class="sec">
+  <h2>6｜组件、样例与工具链 <span class="tag">main/src/component + opensource + tools</span></h2>
+  <div class="cols3">
+    <div>
+      <b style="color:#16324f;">核心组件（预编译库+头文件+KO）</b>
+      <ul class="ul">
+        <li><b>media</b>（438文件）：vi/isp/venc/vdec/vo/ao/vproc/vrb/pipeline/buf_pool/scene_auto/sys，libot_*.a/.so</li>
+        <li><b>npu</b>：libot_avp_npu（rts/tensor/intf/impl）+ protobuf-c，models：yolov5s、mobilenetv2</li>
+        <li><b>security</b>：cipher/KM/OTP，样例覆盖 SM2/SM3/SM4/RSA/ECC/TRNG/PBKDF2（国密）</li>
+        <li><b>smr</b>：Secure Memory Region 内存隔离（内核+用户态）</li>
+        <li><b>upgrade</b>：ot_bc 启动控制，A/B 双区升级 + minizip 解包</li>
+        <li><b>safelib</b>：a55_stl（Cortex-A55 安全软件测试库）+ ot_semu（安全机制运行时）</li>
+        <li><b>oge/gfb</b>：图形/帧缓冲；<b>cve/dpu</b>：视觉/深度处理；<b>board_info</b>：板卡信息；<b>userproc</b>：用户进程框架</li>
+      </ul>
+    </div>
+    <div>
+      <b style="color:#16324f;">样例程序（开放源码，可直接交叉编译）</b>
+      <ul class="ul">
+        <li>采集：sample_vi / sample_mipi / sample_hot_plugin（热插拔）</li>
+        <li>编码：sample_venc / sample_vdec / sample_vproc</li>
+        <li>显示：sample_vo / sample_oge；音频：sample_ao</li>
+        <li>AI：sample_ai / sample_media_ai（CVE+NPU 算法库封装）</li>
+        <li>系统：sample_media_sys / sample_media_pipe / sample_smr / sample_quickboot / scene_auto</li>
+        <li>升级：sample_upgrade（分区/打包/流程）</li>
+        <li>安全：sample_cipher/sample_sm2/sample_sm3/sample_sm4…</li>
+      </ul>
+    </div>
+    <div>
+      <b style="color:#16324f;">工具与开源组件</b>
+      <ul class="ul">
+        <li><b>PC 侧工具</b>：image_tool（镜像打包/签名）、boot_tools（regbin：Excel寄存器表→reg_info.bin）、kdf_customer（客户密钥派生）、nand_production、partition_env（分区表）、romfs/genromfs、ubi_sh、misc_tool、compress</li>
+        <li><b>板级工具</b>：reg-tools-1.0.0（寄存器读写）、LQ560V100_PQ（画质调试）</li>
+        <li><b>开源件</b>：busybox-1.34.1 · openssl-3.2.0 · mtd-utils-2.1.4 · e2fsprogs-1.46.4 · zlib-1.2.12 · xz-5.2.6 · squashfs-4.5 · util-linux-2.37.2 · eudev-3.2.10 · gzip-1.11 · libxml2-2.9.0 · cJSON-1.7.18 · securec（华为安全函数库）</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
